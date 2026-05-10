@@ -16,6 +16,7 @@
 ## 第二层：框架 API 代码级总览
 
 - [框架 API 代码级讲解总览](./02-api-code-guide/framework-api-code-level-guide.md)
+- [Spring Boot SSE 后端实战教程](./02-api-code-guide/spring-boot-sse-backend-tutorial.md)
 
 这篇会重点讲：
 
