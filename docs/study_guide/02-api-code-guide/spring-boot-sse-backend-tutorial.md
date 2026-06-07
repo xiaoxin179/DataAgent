@@ -1494,55 +1494,9 @@ ServerSentEvent.builder(GraphNodeResponse.error(...))
 
 - 前端可以把它当作命名错误事件处理
 
-## 24. `GraphController` 用到的 SSE 相关点，本文是否都覆盖了
 
-已覆盖的直接用法包括：
 
-- `MediaType.TEXT_EVENT_STREAM_VALUE`
-- `ServerHttpResponse.getHeaders().add(...)`
-- `Sinks.many().unicast().onBackpressureBuffer()`
-- `sink.asFlux()`
-- `filter(...)`
-- `sse.event()`
-- `sse.data()`
-- `doOnSubscribe(...)`
-- `doOnCancel(...)`
-- `doOnError(...)`
-- `doOnComplete(...)`
-
-已覆盖的配套用法包括：
-
-- `ServerSentEvent.builder(...).build()`
-- `ServerSentEvent.event(...)`
-- `tryEmitNext(...)`
-- `Sinks.EmitResult`
-- `tryEmitComplete()`
-- `currentSubscriberCount()`
-
-这些配套用法虽然不都直接写在 `GraphController` 方法体里，但它们是这条接口真正运行时不可缺少的部分。
-
-## 25. 文中还额外补充了 `GraphController` 之外的常见用法
-
-除了 `GraphController` 这条链路，本文还补了这些常见能力：
-
-- `comment(...)`
-- `retry(...)`
-- `Sinks.One<T>`
-- `multicast()`
-- `doFinally(...)`
-- `tryEmitError(...)`
-
-DataAgent 中可以参考的另一个 SSE 代码位置是：
-
-- [SessionEventPublisher](../../../data-agent-management/src/main/java/com/alibaba/cloud/ai/dataagent/service/chat/SessionEventPublisher.java)
-
-这里可以看到：
-
-- `comment("heartbeat")`
-- `multicast().onBackpressureBuffer()`
-- `doFinally(...)`
-
-## 26. 读这篇教程时的主线
+## 24. 读这篇教程时的主线
 
 如果把整篇内容压缩成一条理解路径，应该按下面顺序去看：
 
