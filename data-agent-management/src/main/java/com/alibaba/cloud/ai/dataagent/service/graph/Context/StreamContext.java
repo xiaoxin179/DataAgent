@@ -37,7 +37,7 @@ public class StreamContext {
 	private Disposable disposable;
 
 	private Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink;
-
+	//span 是 OpenTelemetry / Langfuse 这类观测系统用的链路追踪对象。任务完成或失败时，需要结束这个 span。
 	private Span span;
 
 	private TextType textType;
