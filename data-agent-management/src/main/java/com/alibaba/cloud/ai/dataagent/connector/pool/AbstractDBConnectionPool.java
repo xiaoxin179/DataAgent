@@ -34,6 +34,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public abstract class AbstractDBConnectionPool implements DBConnectionPool {
 
+	private static final ConcurrentHashMap<String, DataSource> DATA_SOURCE_CACHE = new ConcurrentHashMap<>();
+
+	public abstract String getDriver();
+
+	public abstract ErrorCodeEnum errorMapping(String sqlState);
+
 	/**
  * `getSelectSchemaSQL`：读取当前场景所需的数据或状态。
  *
@@ -134,11 +140,16 @@ public abstract class AbstractDBConnectionPool implements DBConnectionPool {
 		return null;
 	}
 
+	private String generateCacheKey(String url, String username, String password) {
+		return url + "|" + username + "|" + Objects.hashCode(password);
+	}
+
 	/**
  * `close`：执行当前类对外暴露的一步核心操作。
  *
  * 它位于底层适配层，目标是把统一抽象翻译成具体数据库或执行环境可以理解的动作。
  */
+	@Override
 	public void close() {
 		DATA_SOURCE_CACHE.values().forEach(dataSource -> {
 			if (dataSource instanceof DruidDataSource) {

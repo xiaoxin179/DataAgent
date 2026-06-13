@@ -32,6 +32,10 @@ import java.time.LocalDateTime;
  * 它主要负责承载语义模型ImportItem相关字段，本身不放复杂业务逻辑。
  * 阅读时重点看字段语义、默认值，以及这些字段最终会在哪一层被消费。
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class SemanticModelImportItem {
 
 	@NotBlank(message = "表名不能为空")

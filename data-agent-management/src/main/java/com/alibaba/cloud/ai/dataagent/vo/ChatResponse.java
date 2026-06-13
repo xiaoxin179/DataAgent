@@ -25,6 +25,9 @@ import lombok.NoArgsConstructor;
  * 它把内部对话响应结果整理成更适合前端或调用方读取的输出结构。
  * 学习这类类时，重点关注哪些字段是展示用、哪些字段承担流程控制作用。
  */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class ChatResponse {
 
 	private String sessionId;

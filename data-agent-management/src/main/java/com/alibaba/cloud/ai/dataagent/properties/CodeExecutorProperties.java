@@ -28,6 +28,9 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.PROJECT_PROPERTIE
  * 它负责把 application.yml 中的代码执行配置映射成可注入对象，供运行时统一读取。
  * 学习时重点看配置前缀、默认值，以及这些参数会影响哪一段业务链路。
  */
+@Getter
+@Setter
+@ConfigurationProperties(prefix = CodeExecutorProperties.CONFIG_PREFIX)
 public class CodeExecutorProperties {
 
 	public static final String CONFIG_PREFIX = PROJECT_PROPERTIES_PREFIX + ".code-executor";

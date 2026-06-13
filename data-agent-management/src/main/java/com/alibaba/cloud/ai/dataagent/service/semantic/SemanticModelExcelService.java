@@ -30,6 +30,8 @@ import java.util.List;
  * 它定义了语义模型Excel相关能力的对外契约，让上层只依赖抽象，不直接绑定具体实现。
  * 先看接口可以快速建立能力全貌，再回实现类看细节。
  */
+@Service
+@Slf4j
 public class SemanticModelExcelService {
 
 	/**

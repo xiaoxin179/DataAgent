@@ -33,6 +33,7 @@ import java.util.Map;
  * 它负责把数据源相关的增删改查动作落到具体 SQL 上，是 Service 层和数据库之间最直接的一层。
  * 阅读 Mapper 时，最好把方法名、SQL 条件和返回对象类型放在一起理解。
  */
+@Mapper
 public interface DatasourceMapper {
 
 	@Select("SELECT * FROM datasource WHERE id = #{id}")

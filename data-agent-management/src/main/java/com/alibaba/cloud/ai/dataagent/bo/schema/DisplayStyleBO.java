@@ -29,6 +29,10 @@ import java.util.List;
  * 它通常承载DisplayStyle在处理中间阶段的结构化结果，方便不同服务方法之间传递。
  * 这类类适合配合调用链一起看，理解“谁写入它、谁继续消费它”。
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class DisplayStyleBO {
 
 	/**

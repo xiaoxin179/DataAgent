@@ -29,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 它负责维护或拼接提示词Loader相关 Prompt，让模型调用保持可复用、可调试、可配置。
  * 重点看模板变量来自哪里，以及这些变量分别在哪一步准备好。
  */
+@Slf4j
 public class PromptLoader {
 
 	private static final String PROMPT_PATH_PREFIX = "prompts/";

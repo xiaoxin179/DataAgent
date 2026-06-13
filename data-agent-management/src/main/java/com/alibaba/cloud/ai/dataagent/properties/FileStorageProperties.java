@@ -29,6 +29,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * 它负责把 application.yml 中的文件Storage配置映射成可注入对象，供运行时统一读取。
  * 学习时重点看配置前缀、默认值，以及这些参数会影响哪一段业务链路。
  */
+@Getter
+@Setter
+@EnableConfigurationProperties({ OssStorageProperties.class })
+@ConfigurationProperties(prefix = Constant.PROJECT_PROPERTIES_PREFIX + ".file")
 public class FileStorageProperties {
 
 	/**

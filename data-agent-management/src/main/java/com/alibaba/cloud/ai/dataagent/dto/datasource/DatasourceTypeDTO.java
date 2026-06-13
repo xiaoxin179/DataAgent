@@ -26,6 +26,10 @@ import lombok.NoArgsConstructor;
  * 它主要负责承载数据源Type相关字段，本身不放复杂业务逻辑。
  * 阅读时重点看字段语义、默认值，以及这些字段最终会在哪一层被消费。
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class DatasourceTypeDTO {
 
 	/**

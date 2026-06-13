@@ -26,6 +26,7 @@ import java.util.List;
  * 它负责把逻辑关联相关的增删改查动作落到具体 SQL 上，是 Service 层和数据库之间最直接的一层。
  * 阅读 Mapper 时，最好把方法名、SQL 条件和返回对象类型放在一起理解。
  */
+@Mapper
 public interface LogicalRelationMapper {
 
 	/**
