@@ -89,13 +89,17 @@ public class EvidenceRecallNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 用户原始问题是查询改写的主体。
 		String question = StateUtil.getStringValue(state, INPUT_KEY);
+
+		// agentId 用于限定向量检索范围，防止不同智能体知识串用。
 		String agentId = StateUtil.getStringValue(state, AGENT_ID);
 		Assert.hasText(agentId, "Agent ID cannot be empty.");
 
 		log.info("Rewriting query before getting evidence in question: {}", question);
 		log.debug("Agent ID: {}", agentId);
 
+		// 多轮历史帮助模型消解“它、上个月、刚才那个表”等上下文指代。
 		String multiTurn = StateUtil.getStringValue(state, MULTI_TURN_CONTEXT, "(无)");
 
 		// 注意这里不把问题扩写成多个子问题，而是只生成一个更适合知识检索的 standalone query。
@@ -103,9 +107,13 @@ public class EvidenceRecallNode implements NodeAction {
 		String prompt = PromptHelper.buildEvidenceQueryRewritePrompt(multiTurn, question);
 		log.debug("Built evidence-query-rewrite prompt as follows \n {} \n", prompt);
 
+		// 第一段模型流生成 standalone query。
 		Flux<ChatResponse> responseFlux = llmService.callUser(prompt);
+
+		// 第二段证据展示由同步检索回调主动推送，因此使用独立 sink 桥接。
 		Sinks.Many<String> evidenceDisplaySink = Sinks.many().multicast().onBackpressureBuffer();
 
+		// 两段流共享同一个最终结果 Map。
 		final Map<String, Object> resultMap = new HashMap<>();
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGenerator(this.getClass(), state,
 				responseFlux,
@@ -126,53 +134,59 @@ public class EvidenceRecallNode implements NodeAction {
 	}
 
 	/**
- * `getEvidences`：读取当前场景所需的数据或状态。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 解析改写结果、执行两类向量召回并构造最终证据。
+	 */
 	private Map<String, Object> getEvidences(String llmOutput, String agentId, Sinks.Many<String> sink) {
 		try {
+			// 将模型 JSON 解析成 DTO，并取得独立检索问题。
 			String standaloneQuery = extractStandaloneQuery(llmOutput);
 
+			// 无有效改写结果时使用“无”作为明确证据值。
 			if (standaloneQuery == null || standaloneQuery.isEmpty()) {
 				log.debug("No standalone query from LLM output");
 				sink.tryEmitNext("未能进行查询重写。\n");
 				return Map.of(EVIDENCE, "无");
 			}
 
+			// 先把改写结果发给前端，便于观察后端实际检索的问题。
 			outputRewrittenQuery(standaloneQuery, sink);
 
+			// 分别召回业务术语和智能体知识。
 			DocumentRetrievalResult retrievalResult = retrieveDocuments(agentId, standaloneQuery);
 
+			// 两类知识都为空时无需继续格式化。
 			if (retrievalResult.allDocuments().isEmpty()) {
 				log.debug("No evidence documents found for agent: {} with query: {}", agentId, standaloneQuery);
 				sink.tryEmitNext("未找到证据。\n");
 				return Map.of(EVIDENCE, "无");
 			}
 
+			// 将 Document 列表转换为后续 prompt 可直接消费的证据文本。
 			String evidence = buildFormattedEvidenceContent(retrievalResult.businessTermDocuments(),
 					retrievalResult.agentKnowledgeDocuments());
 			log.info("Evidence content built as follows \n {} \n", evidence);
 
+			// 向前端输出可读的召回摘要。
 			outputEvidenceContent(retrievalResult.allDocuments(), sink);
 			return Map.of(EVIDENCE, evidence);
 		}
 		catch (Exception e) {
+			// 检索或解析异常通过 sink 传播，同时返回空证据保护状态结构。
 			log.error("Error occurred while getting evidences", e);
 			sink.tryEmitError(e);
 			return Map.of(EVIDENCE, "");
 		}
 		finally {
+			// 无论成功失败都完成展示 sink，否则 concatWith 的第二段流不会结束。
 			sink.tryEmitComplete();
 		}
 	}
 
 	/**
- * `outputRewrittenQuery`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 将查询改写过程分段推送给前端。
+	 */
 	private void outputRewrittenQuery(String standaloneQuery, Sinks.Many<String> sink) {
+		// 标题、正文和阶段提示拆成多个 chunk，使页面可以逐步展示。
 		sink.tryEmitNext("重写后查询：\n");
 		sink.tryEmitNext(standaloneQuery + "\n");
 		log.debug("Using standalone query for evidence recall: {}", standaloneQuery);
@@ -180,21 +194,22 @@ public class EvidenceRecallNode implements NodeAction {
 	}
 
 	/**
- * `retrieveDocuments`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 在当前 agent 的知识范围内分别检索业务术语和通用知识。
+	 */
 	private DocumentRetrievalResult retrieveDocuments(String agentId, String standaloneQuery) {
+		// BUSINESS_TERM 用于解释指标、业务别名和领域术语。
 		List<Document> businessTermDocuments = vectorStoreService
 			.getDocumentsForAgent(agentId, standaloneQuery, DocumentMetadataConstant.BUSINESS_TERM)
 			.stream()
 			.toList();
 
+		// AGENT_KNOWLEDGE 用于召回该智能体配置的说明、规则和补充知识。
 		List<Document> agentKnowledgeDocuments = vectorStoreService
 			.getDocumentsForAgent(agentId, standaloneQuery, DocumentMetadataConstant.AGENT_KNOWLEDGE)
 			.stream()
 			.toList();
 
+		// 合并列表只用于统一判断和前端展示，格式化时仍保留两类知识的边界。
 		List<Document> allDocuments = new ArrayList<>();
 		if (!businessTermDocuments.isEmpty()) {
 			allDocuments.addAll(businessTermDocuments);
@@ -206,6 +221,7 @@ public class EvidenceRecallNode implements NodeAction {
 		log.info("Retrieved documents for agent {}: {} business term docs, {} agent knowledge docs, total {} docs",
 				agentId, businessTermDocuments.size(), agentKnowledgeDocuments.size(), allDocuments.size());
 
+		// 使用 record 一次返回分类列表和合并列表。
 		return new DocumentRetrievalResult(businessTermDocuments, agentKnowledgeDocuments, allDocuments);
 	}
 

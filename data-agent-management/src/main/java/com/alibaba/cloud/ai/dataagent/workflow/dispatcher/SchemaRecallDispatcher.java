@@ -37,16 +37,19 @@ import static com.alibaba.cloud.ai.graph.StateGraph.END;
 public class SchemaRecallDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 根据表级召回结果判断是否有必要继续构建表关系。
+	 */
 	@Override
 	public String apply(OverAllState state) throws Exception {
+		// SchemaRecallNode 把候选表以 Document 列表写入 state。
 		List<Document> tableDocuments = StateUtil.getDocumentList(state, TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT);
+
+		// 至少召回一个候选表时，交给 TableRelationNode 恢复结构和关系。
 		if (tableDocuments != null && !tableDocuments.isEmpty()) {
 			return TABLE_RELATION_NODE;
 		}
+
+		// 没有候选表意味着无法可靠生成 SQL，直接结束而不是让模型猜测。
 		log.info("No table documents found, ending conversation");
 		return END;
 	}

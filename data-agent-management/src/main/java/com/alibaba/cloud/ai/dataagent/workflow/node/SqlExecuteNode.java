@@ -90,27 +90,32 @@ public class SqlExecuteNode implements NodeAction {
 	private static final int SAMPLE_DATA_NUMBER = 20;
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 读取当前计划步骤和已生成 SQL，取得数据库配置后进入真实执行方法。
+	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 当前步号决定本次结果要保存到 step_N，并决定成功后推进到哪一步。
 		Integer currentStep = PlanProcessUtil.getCurrentStepNumber(state);
 
+		// 从上一个 SqlGenerateNode 取得 SQL，并清除 Markdown 代码块等包装。
 		String sqlQuery = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT);
 		sqlQuery = nl2SqlService.sqlTrim(sqlQuery);
 
 		log.info("Executing SQL query: {}", sqlQuery);
 
+		// agentId 用来查询当前智能体绑定的数据源配置。
 		String agentIdStr = StateUtil.getStringValue(state, Constant.AGENT_ID);
 		if (StringUtils.isBlank(agentIdStr)) {
 			throw new IllegalStateException("Agent ID cannot be empty.");
 		}
 
+		// 数据层使用 Long 类型主键，因此把 state 中的字符串转换为 Long。
 		Long agentId = Long.valueOf(agentIdStr);
+
+		// 查询方言、schema、连接信息等数据库运行配置。
 		DbConfigBO dbConfig = databaseUtil.getAgentDbConfig(agentId);
 
+		// 将准备好的上下文交给统一执行方法。
 		return executeSqlQuery(state, currentStep, sqlQuery, dbConfig, agentId);
 	}
 
@@ -126,38 +131,55 @@ public class SqlExecuteNode implements NodeAction {
 	@SuppressWarnings("unchecked")
 	private Map<String, Object> executeSqlQuery(OverAllState state, Integer currentStep, String sqlQuery,
 			DbConfigBO dbConfig, Long agentId) {
+		// 构造数据库访问层需要的查询参数。
 		DbQueryParameter dbQueryParameter = new DbQueryParameter();
 		dbQueryParameter.setSql(sqlQuery);
 		dbQueryParameter.setSchema(dbConfig.getSchema());
 
+		// 根据 agent 数据源类型取得对应数据库 Accessor 实现。
 		Accessor dbAccessor = databaseUtil.getAgentAccessor(agentId);
+
+		// result 会在 Flux 执行期间写入，流完成后由 result mapper 返回给 Graph state。
 		final Map<String, Object> result = new HashMap<>();
 
+		// 使用 Flux.create 把同步数据库调用和多段前端提示包装成响应式流。
 		Flux<ChatResponse> displayFlux = Flux.create(emitter -> {
+			// 先发送执行开始和 SQL 类型边界，前端可以用专门样式展示 SQL。
 			emitter.next(ChatResponseUtil.createResponse("开始执行 SQL..."));
 			emitter.next(ChatResponseUtil.createResponse("执行 SQL 查询："));
 			emitter.next(ChatResponseUtil.createPureResponse(TextType.SQL.getStartSign()));
 			emitter.next(ChatResponseUtil.createResponse(sqlQuery));
 			emitter.next(ChatResponseUtil.createPureResponse(TextType.SQL.getEndSign()));
+			// ResultBO 同时承载原始结果集和推荐展示方式。
 			ResultBO resultBO = ResultBO.builder().build();
 
 			try {
+				// 真正访问数据库并把 JDBC 结果转换为统一 ResultSetBO。
 				ResultSetBO resultSetBO = dbAccessor.executeSqlAndReturnObject(dbConfig, dbQueryParameter);
+
+				// 可选地调用模型推断图表类型；失败不会让 SQL 主流程失败。
 				DisplayStyleBO displayStyleBO = enrichResultSetWithChartConfig(state, resultSetBO);
+
+				// 把查询数据和展示配置装入统一响应对象。
 				resultBO.setResultSet(resultSetBO);
 				resultBO.setDisplayStyle(displayStyleBO);
 
+				// 原始结果 JSON 用于步骤历史和报告，带展示配置 JSON 用于前端当前消息。
 				String strResultSetJson = JsonUtil.getObjectMapper().writeValueAsString(resultSetBO);
 				String strResultJson = JsonUtil.getObjectMapper().writeValueAsString(resultBO);
 
+				// 向前端发送执行成功提示和结果集类型边界。
 				emitter.next(ChatResponseUtil.createResponse("执行 SQL 完成"));
 				emitter.next(ChatResponseUtil.createResponse("SQL 查询结果："));
 				emitter.next(ChatResponseUtil.createPureResponse(TextType.RESULT_SET.getStartSign()));
 				emitter.next(ChatResponseUtil.createPureResponse(strResultJson));
 				emitter.next(ChatResponseUtil.createPureResponse(TextType.RESULT_SET.getEndSign()));
 
+				// 读取之前步骤的结果，不能覆盖多步计划已完成的内容。
 				Map<String, String> existingResults = StateUtil.getObjectValue(state, SQL_EXECUTE_NODE_OUTPUT,
 						Map.class, new HashMap<>());
+
+				// 按当前步号追加 step_N -> 结果 JSON。
 				Map<String, String> updatedResults = PlanProcessUtil.addStepResult(existingResults, currentStep,
 						strResultSetJson);
 
@@ -169,23 +191,31 @@ public class SqlExecuteNode implements NodeAction {
 					.getToolParameters();
 				currentStepParams.setSqlQuery(sqlQuery);
 
+				// 一次写回执行结果、清空重试原因、保存 Python 数据、推进步号并重置 SQL 计数。
 				result.putAll(Map.of(SQL_EXECUTE_NODE_OUTPUT, updatedResults, SQL_REGENERATE_REASON,
 						SqlRetryDto.empty(), SQL_RESULT_LIST_MEMORY, resultSetBO.getData(), PLAN_CURRENT_STEP,
 						currentStep + 1, SQL_GENERATE_COUNT, 0));
 			}
 			catch (Exception e) {
+				// 数据库异常不会在这里直接结束图，而是转成结构化重试原因。
 				String errorMessage = e.getMessage();
 				log.error("SQL execution failed - SQL as follows: \n {} \n ", sqlQuery, e);
 				result.put(SQL_REGENERATE_REASON, SqlRetryDto.sqlExecute(errorMessage));
+
+				// 同时把失败信息流式发给前端。
 				emitter.next(ChatResponseUtil.createResponse("SQL 执行失败: " + errorMessage));
 			}
 			finally {
+				// 无论成功失败都必须完成 displayFlux，否则 Graph 会一直等待节点结束。
 				emitter.complete();
 			}
 		});
 
+		// 将展示流包装成带节点身份的 Graph 流，完成后把 result Map 合并进 state。
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, v -> result, displayFlux);
+
+		// 节点对外返回 generator，Graph 框架负责订阅并处理最终状态。
 		return Map.of(SQL_EXECUTE_NODE_OUTPUT, generator);
 	}
 
@@ -196,7 +226,10 @@ public class SqlExecuteNode implements NodeAction {
 	 * 即使失败，也不应该影响主链路结果返回。
 	 */
 	private DisplayStyleBO enrichResultSetWithChartConfig(OverAllState state, ResultSetBO resultSetBO) {
+		// 默认先创建一个空展示配置。
 		DisplayStyleBO displayStyle = new DisplayStyleBO();
+
+		// 配置关闭时直接使用表格，不产生额外模型调用。
 		if (!this.properties.isEnableSqlResultChart()) {
 			log.debug("Sql result chart is disabled, set display style as table default");
 			displayStyle.setType("table");
@@ -204,11 +237,15 @@ public class SqlExecuteNode implements NodeAction {
 		}
 
 		try {
+			// 使用增强后的标准问题帮助模型理解用户希望怎样展示数据。
 			String userQuery = StateUtil.getCanonicalQuery(state);
+
+			// 只截取前 SAMPLE_DATA_NUMBER 行，控制 prompt 大小和敏感数据暴露范围。
 			String sqlResultJson = JsonUtil.getObjectMapper()
 				.writeValueAsString(resultSetBO.getData() != null
 						? resultSetBO.getData().stream().limit(SAMPLE_DATA_NUMBER).toList() : null);
 
+			// 组装本次图表推荐的用户消息。
 			String userPrompt = String.format("""
 					# 正式任务
 
@@ -218,6 +255,7 @@ public class SqlExecuteNode implements NodeAction {
 					# 输出
 					""", userQuery != null ? userQuery : "数据可视化", sqlResultJson);
 
+			// 从统一模板中取出 system 部分。
 			String fullPrompt = PromptHelper.buildDataViewAnalysisPrompt();
 			String[] parts = fullPrompt.split("=== 用户输入 ===", 2);
 			String systemPrompt = parts[0].trim();
@@ -225,11 +263,13 @@ public class SqlExecuteNode implements NodeAction {
 			log.debug("Built chart config generation system prompt as follows \n {} \n", systemPrompt);
 			log.debug("Built chart config generation user prompt as follows \n {} \n", userPrompt);
 
+			// 调用模型并把流式 token 聚合为完整 JSON；block 设置超时，避免拖住 SQL 主链。
 			String chartConfigJson = llmService.toStringFlux(llmService.call(systemPrompt, userPrompt))
 				.collect(StringBuilder::new, StringBuilder::append)
 				.map(StringBuilder::toString)
 				.block(Duration.ofMillis(properties.getEnrichSqlResultTimeout()));
 			if (chartConfigJson != null && !chartConfigJson.trim().isEmpty()) {
+				// 去除 Markdown 代码块，再解析为类型明确的展示配置。
 				String content = MarkdownParserUtil.extractText(chartConfigJson.trim());
 				displayStyle = jsonParseUtil.tryConvertToObject(content, DisplayStyleBO.class);
 				log.debug("Successfully enriched ResultSetBO with chart config: type={}, title={}, x={}, y={}",
@@ -241,6 +281,7 @@ public class SqlExecuteNode implements NodeAction {
 		catch (Exception e) {
 			log.error("Failed to enrich ResultSetBO with chart config", e);
 		}
+		// 推荐失败时返回 null，前端或调用方可以回退到默认表格展示。
 		return null;
 	}
 

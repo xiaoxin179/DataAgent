@@ -98,9 +98,13 @@ public class DataAgentConfiguration implements DisposableBean {
 	@ConditionalOnMissingBean(RestClientCustomizer.class)
 	public RestClientCustomizer restClientCustomizer(@Value("${rest.connect.timeout:600}") long connectTimeout,
 			@Value("${rest.read.timeout:600}") long readTimeout) {
+		// 返回一个定制器，由 Spring 在创建同步 RestClient 时应用连接和读取超时。
 		return restClientBuilder -> restClientBuilder
 			.requestFactory(ClientHttpRequestFactoryBuilder.reactor().withCustomizer(factory -> {
+				// 限制建立 TCP 连接允许等待的最长时间。
 				factory.setConnectTimeout(Duration.ofSeconds(connectTimeout));
+
+				// 限制连接建立后读取响应允许等待的最长时间。
 				factory.setReadTimeout(Duration.ofSeconds(readTimeout));
 			}).build());
 	}
@@ -109,6 +113,7 @@ public class DataAgentConfiguration implements DisposableBean {
 	@ConditionalOnMissingBean(WebClient.Builder.class)
 	public WebClient.Builder webClientBuilder(@Value("${webclient.response.timeout:600}") long responseTimeout) {
 
+		// WebClient 用于异步/流式模型调用，底层 Reactor Netty 客户端负责响应超时。
 		return WebClient.builder()
 			.clientConnector(new ReactorClientHttpConnector(
 					HttpClient.create().responseTimeout(Duration.ofSeconds(responseTimeout))));
@@ -118,7 +123,9 @@ public class DataAgentConfiguration implements DisposableBean {
 	public StateGraph nl2sqlGraph(NodeBeanUtil nodeBeanUtil, CodeExecutorProperties codeExecutorProperties)
 			throws GraphStateException {
 
+		// 定义每个 state key 在节点返回新值时如何与旧值合并。
 		KeyStrategyFactory keyStrategyFactory = () -> {
+			// key 是状态名，value 是对应的合并策略。
 			HashMap<String, KeyStrategy> keyStrategyHashMap = new HashMap<>();
 			// User input
 			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
@@ -178,9 +185,11 @@ public class DataAgentConfiguration implements DisposableBean {
 			keyStrategyHashMap.put(TRACE_THREAD_ID, KeyStrategy.REPLACE);
 			// Final result
 			keyStrategyHashMap.put(RESULT, KeyStrategy.REPLACE);
+			// 返回完整策略表，StateGraph 后续用它合并每个节点返回的 Map。
 			return keyStrategyHashMap;
 		};
 
+		// 创建图并注册全部业务节点；NodeBeanUtil 从 Spring 容器取得节点 Bean 并适配为异步动作。
 		StateGraph stateGraph = new StateGraph(NL2SQL_GRAPH_NAME, keyStrategyFactory)
 			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class))
 			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class))
@@ -199,6 +208,7 @@ public class DataAgentConfiguration implements DisposableBean {
 			.addNode(SEMANTIC_CONSISTENCY_NODE, nodeBeanUtil.getNodeBeanAsync(SemanticConsistencyNode.class))
 			.addNode(HUMAN_FEEDBACK_NODE, nodeBeanUtil.getNodeBeanAsync(HumanFeedbackNode.class));
 
+		// 从 START 进入意图识别；后续固定边直接跳转，条件边通过 Dispatcher 读取 state 决策。
 		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
 			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
 					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, END, END))
@@ -214,36 +224,36 @@ public class DataAgentConfiguration implements DisposableBean {
 			.addConditionalEdges(FEASIBILITY_ASSESSMENT_NODE, edge_async(new FeasibilityAssessmentDispatcher()),
 					Map.of(PLANNER_NODE, PLANNER_NODE, END, END))
 
-			// The edge from PlannerNode now goes to PlanExecutorNode for validation and
-			// execution
+			// Planner 只生成计划，PlanExecutor 负责校验并选择当前步骤对应的执行节点。
 			.addEdge(PLANNER_NODE, PLAN_EXECUTOR_NODE)
-			// python nodes
+			// Python 代码先生成再执行，执行结果由 Dispatcher 决定重试、分析或结束。
 			.addEdge(PYTHON_GENERATE_NODE, PYTHON_EXECUTE_NODE)
 			.addConditionalEdges(PYTHON_EXECUTE_NODE, edge_async(new PythonExecutorDispatcher(codeExecutorProperties)),
 					Map.of(PYTHON_ANALYZE_NODE, PYTHON_ANALYZE_NODE, END, END, PYTHON_GENERATE_NODE,
 							PYTHON_GENERATE_NODE))
 			.addEdge(PYTHON_ANALYZE_NODE, PLAN_EXECUTOR_NODE)
-			// The dispatcher at PlanExecutorNode will decide the next step
+			// 计划执行器可以进入 SQL、Python、报告、人工反馈，也可以回 Planner 修复计划。
 			.addConditionalEdges(PLAN_EXECUTOR_NODE, edge_async(new PlanExecutorDispatcher()), Map.of(
-					// If validation fails, go back to PlannerNode to repair
+					// 计划校验失败时回 Planner 生成修正版。
 					PLANNER_NODE, PLANNER_NODE,
-					// If validation passes, proceed to the correct execution node
+					// 计划校验成功时按当前 ExecutionStep 选择具体工具节点。
 					SQL_GENERATE_NODE, SQL_GENERATE_NODE, PYTHON_GENERATE_NODE, PYTHON_GENERATE_NODE,
 					REPORT_GENERATOR_NODE, REPORT_GENERATOR_NODE,
-					// If human review is enabled, go to human_feedback node
+					// 开启人工审核时先进入反馈节点。
 					HUMAN_FEEDBACK_NODE, HUMAN_FEEDBACK_NODE,
-					// If max repair attempts are reached, end the process
+					// 修复次数超限或计划已结束时进入 END。
 					END, END))
-			// Human feedback node routing
+			// 人工反馈节点根据批准/拒绝结果决定继续执行还是回 Planner。
 			.addConditionalEdges(HUMAN_FEEDBACK_NODE, edge_async(new HumanFeedbackDispatcher()), Map.of(
-					// If plan is rejected, go back to PlannerNode
+					// 拒绝计划时重新规划。
 					PLANNER_NODE, PLANNER_NODE,
-					// If plan is approved, continue with execution
+					// 批准计划时回到执行器处理当前步骤。
 					PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE,
-					// If max repair attempts are reached, end the process
+					// 无法继续时结束图执行。
 					END, END))
+			// 最终报告生成后整张图完成。
 			.addEdge(REPORT_GENERATOR_NODE, END)
-			// sql generate and sql execute node
+			// SQL 生成后先做语义一致性检查，失败可回生成节点，成功才执行。
 			.addConditionalEdges(SQL_GENERATE_NODE, nodeBeanUtil.getEdgeBeanAsync(SqlGenerateDispatcher.class),
 					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, END, END, SEMANTIC_CONSISTENCY_NODE,
 							SEMANTIC_CONSISTENCY_NODE))
@@ -252,11 +262,14 @@ public class DataAgentConfiguration implements DisposableBean {
 			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(new SQLExecutorDispatcher()),
 					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE));
 
+		// 导出 PlantUML 文本，启动日志中可以直接检查实际注册的节点和边。
 		GraphRepresentation graphRepresentation = stateGraph.getGraph(GraphRepresentation.Type.PLANTUML,
 				"workflow graph");
 
+		// 打印图结构，便于开发阶段核对配置是否符合预期。
 		log.info("workflow in PlantUML format as follows \n\n" + graphRepresentation.content() + "\n\n");
 
+		// 返回未编译的 StateGraph，GraphServiceImpl 构造时再附加人工中断配置并编译。
 		return stateGraph;
 	}
 
@@ -270,6 +283,7 @@ public class DataAgentConfiguration implements DisposableBean {
 	@ConditionalOnMissingBean(VectorStore.class)
 	@ConditionalOnProperty(name = "spring.ai.vectorstore.type", havingValue = "simple", matchIfMissing = true)
 	public SimpleVectorStore simpleVectorStore(EmbeddingModel embeddingModel) {
+		// 当项目没有配置外部 VectorStore 时，使用内存实现保证应用仍可启动和运行。
 		return SimpleVectorStore.builder(embeddingModel).build();
 	}
 
@@ -277,6 +291,7 @@ public class DataAgentConfiguration implements DisposableBean {
 	@ConditionalOnBean(SimpleVectorStore.class)
 	public SimpleVectorStoreInitialization simpleVectorStoreInitialization(SimpleVectorStore vectorStore,
 			DataAgentProperties properties) {
+		// 创建初始化器，负责在应用启动阶段加载或准备 SimpleVectorStore 数据。
 		return new SimpleVectorStoreInitialization(vectorStore, properties);
 	}
 
@@ -286,16 +301,21 @@ public class DataAgentConfiguration implements DisposableBean {
 		// 使用增强的批处理策略，同时考虑token数量和文本数量限制
 		EncodingType encodingType;
 		try {
+			// 尝试将配置中的编码器名称转换为 jtokkit 枚举。
 			Optional<EncodingType> encodingTypeOptional = EncodingType
 				.fromName(properties.getEmbeddingBatch().getEncodingType());
+
+			// 配置名称无法匹配时使用 OpenAI 常见的 CL100K_BASE。
 			encodingType = encodingTypeOptional.orElse(EncodingType.CL100K_BASE);
 		}
 		catch (Exception e) {
+			// 配置解析异常时记录告警并继续使用安全默认值。
 			log.warn("Unknown encodingType '{}', falling back to CL100K_BASE",
 					properties.getEmbeddingBatch().getEncodingType());
 			encodingType = EncodingType.CL100K_BASE;
 		}
 
+		// 同时限制 token 数、文本条数和预留比例，避免单次 embedding 请求过大。
 		return new EnhancedTokenCountBatchingStrategy(encodingType, properties.getEmbeddingBatch().getMaxTokenCount(),
 				properties.getEmbeddingBatch().getReservePercentage(),
 				properties.getEmbeddingBatch().getMaxTextCount());
@@ -303,19 +323,25 @@ public class DataAgentConfiguration implements DisposableBean {
 
 	@Bean
 	public ToolCallbackResolver toolCallbackResolver(GenericApplicationContext context) {
+		// 收集普通 ToolCallback，但排除只用于 MCP Server 暴露的工具。
 		List<ToolCallback> allFunctionAndToolCallbacks = new ArrayList<>(
 				McpServerToolUtil.excludeMcpServerTool(context, ToolCallback.class));
+
+		// ToolCallbackProvider 可能一次提供多个回调，因此展开后加入同一集合。
 		McpServerToolUtil.excludeMcpServerTool(context, ToolCallbackProvider.class)
 			.stream()
 			.map(pr -> List.of(pr.getToolCallbacks()))
 			.forEach(allFunctionAndToolCallbacks::addAll);
 
+		// 静态解析器按工具名称从已收集回调中查找。
 		var staticToolCallbackResolver = new StaticToolCallbackResolver(allFunctionAndToolCallbacks);
 
+		// Spring Bean 解析器允许按需从容器中解析工具 Bean。
 		var springBeanToolCallbackResolver = SpringBeanToolCallbackResolver.builder()
 			.applicationContext(context)
 			.build();
 
+		// 委托解析器按顺序尝试静态集合和 Spring 容器两种来源。
 		return new DelegatingToolCallbackResolver(List.of(staticToolCallbackResolver, springBeanToolCallbackResolver));
 	}
 
@@ -327,10 +353,11 @@ public class DataAgentConfiguration implements DisposableBean {
 	@Primary
 	public EmbeddingModel embeddingModel(AiModelRegistry registry) {
 
-		// 1. 定义目标源 (TargetSource)
+		// 定义动态目标源；代理对象每次收到方法调用都会向它请求真实模型。
 		TargetSource targetSource = new TargetSource() {
 			@Override
 			public Class<?> getTargetClass() {
+				// 告诉 Spring AOP 目标对象实现 EmbeddingModel 接口。
 				return EmbeddingModel.class;
 			}
 
@@ -352,13 +379,14 @@ public class DataAgentConfiguration implements DisposableBean {
 			}
 		};
 
-		// 2. 创建代理工厂
+		// 创建 AOP 代理工厂并绑定上面的动态目标源。
 		ProxyFactory proxyFactory = new ProxyFactory();
 		proxyFactory.setTargetSource(targetSource);
-		// 代理接口
+
+		// 使用接口代理，使调用方看到的类型仍然是 EmbeddingModel。
 		proxyFactory.addInterface(EmbeddingModel.class);
 
-		// 3. 返回动态生成的代理对象
+		// 返回一个稳定的 Spring Bean 引用，实际模型可以在 Registry 中动态切换。
 		return (EmbeddingModel) proxyFactory.getProxy();
 	}
 

@@ -67,10 +67,15 @@ public class SemanticConsistencyNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// EvidenceRecallNode 找到的业务规则和术语证据。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+		// TableRelationNode 整理出的候选表、字段和关联关系。
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+		// 方言决定 SQL 函数、分页等语法应遵循哪种数据库规则。
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
+		// SqlGenerateNode 刚生成、尚未执行的 SQL。
 		String sql = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT);
+		// 规范化问题是判断 SQL 是否真正回答用户需求的基准。
 		String userQuery = StateUtil.getCanonicalQuery(state);
 
 		// 把所有校验上下文一次性打包到 DTO，避免后续服务层依赖零散参数。
@@ -84,6 +89,7 @@ public class SemanticConsistencyNode implements NodeAction {
 			.build();
 		log.info("Starting semantic consistency validation - SQL: {}", sql);
 
+		// 调用 NL2SQL 服务中的语义校验模型，结果仍以 token 流返回。
 		Flux<ChatResponse> validationResultFlux = nl2SqlService.performSemanticConsistency(semanticConsistencyDTO);
 
 		// 返回的 generator 会在前端展示校验过程，并在流结束后将结果落入 state。
@@ -91,12 +97,14 @@ public class SemanticConsistencyNode implements NodeAction {
 				state, "开始语义一致性校验。", "语义一致性校验完成。", validationResult -> {
 					// 这里依赖提示词约定：以“不通过”开头时表示需要重新生成 SQL。
 					boolean isPassed = !validationResult.startsWith("不通过");
+					// 把布尔结果和可选重试原因一起返回给下一跳 Dispatcher。
 					Map<String, Object> result = buildValidationResult(isPassed, validationResult);
 					log.info("[{}] Semantic consistency validation result: {}, passed: {}",
 							this.getClass().getSimpleName(), validationResult, isPassed);
 					return result;
 				}, validationResultFlux);
 
+		// 节点输出 generator，校验文本会在订阅后流式发送。
 		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, generator);
 	}
 
@@ -107,10 +115,12 @@ public class SemanticConsistencyNode implements NodeAction {
 	 * 不通过时还要把失败原因转成 `SqlRetryDto`，供下一轮 SQL 生成作为修复提示。
 	 */
 	private Map<String, Object> buildValidationResult(boolean passed, String validationResult) {
+		// 通过时只需写入 true，Dispatcher 会把流程送往 SQL 执行。
 		if (passed) {
 			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, true);
 		}
 		else {
+			// 不通过时保留模型给出的具体原因，下一轮 SQL 生成会把它加入修复 Prompt。
 			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false, SQL_REGENERATE_REASON,
 					SqlRetryDto.semantic(validationResult));
 		}

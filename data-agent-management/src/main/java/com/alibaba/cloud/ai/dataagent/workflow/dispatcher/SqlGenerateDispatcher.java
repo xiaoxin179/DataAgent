@@ -45,14 +45,14 @@ public class SqlGenerateDispatcher implements EdgeAction {
 	private final DataAgentProperties properties;
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 读取 SQL 生成结果和重试次数，返回下一节点名称。
+	 */
 	@Override
 	public String apply(OverAllState state) {
+		// SQL_GENERATE_OUTPUT 可能不存在，表示生成节点没有得到可用 SQL。
 		Optional<Object> optional = state.value(SQL_GENERATE_OUTPUT);
 		if (optional.isEmpty()) {
+			// 读取当前生成次数；没有值时使用最大次数作为保守默认值，避免无限重试。
 			int currentCount = state.value(SQL_GENERATE_COUNT, properties.getMaxSqlRetryCount());
 
 			// 当前节点没有生成出 SQL 结果时，按配置的最大重试次数进行补救。
@@ -64,14 +64,17 @@ public class SqlGenerateDispatcher implements EdgeAction {
 			return END;
 		}
 
+		// 节点约定该状态最终写入 SQL 字符串或特殊 END 标记。
 		String sqlGenerateOutput = (String) optional.get();
 		log.info("SQL 生成结果: {}", sqlGenerateOutput);
 
+		// 生成节点主动返回 END 时，分发器直接终止流程。
 		if (END.equals(sqlGenerateOutput)) {
 			log.info("检测到流程终止标志: {}", END);
 			return END;
 		}
 		else {
+			// 普通 SQL 不能立即执行，要先验证它是否满足用户语义。
 			log.info("SQL 生成成功，进入语义一致性检查节点: {}", SEMANTIC_CONSISTENCY_NODE);
 			return SEMANTIC_CONSISTENCY_NODE;
 		}

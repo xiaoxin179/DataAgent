@@ -39,31 +39,36 @@ import static com.alibaba.cloud.ai.graph.StateGraph.END;
 public class QueryEnhanceDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 校验查询增强 DTO 是否包含后续 Schema 召回所需的字段。
+	 */
 	@Override
 	public String apply(OverAllState state) throws Exception {
+		// 将 state 中的 JSON/Map 形式结果恢复为类型明确的 DTO。
 		QueryEnhanceOutputDTO queryProcessOutput = StateUtil.getObjectValue(state, QUERY_ENHANCE_NODE_OUTPUT,
 				QueryEnhanceOutputDTO.class);
 
+		// 模型输出无法解析时没有可靠的检索词，结束当前图。
 		if (queryProcessOutput == null) {
 			log.warn("Query process output is null, ending conversation");
 			return END;
 		}
 
+		// canonicalQuery 是消除多轮指代后的标准问题。
 		boolean isCanonicalQueryEmpty = queryProcessOutput.getCanonicalQuery() == null
 				|| queryProcessOutput.getCanonicalQuery().trim().isEmpty();
+
+		// expandedQueries 用于扩大 Schema 向量召回覆盖面。
 		boolean isExpandedQueriesEmpty = queryProcessOutput.getExpandedQueries() == null
 				|| queryProcessOutput.getExpandedQueries().isEmpty();
 
+		// 任一核心字段为空都不能稳定执行下游检索。
 		if (isCanonicalQueryEmpty || isExpandedQueriesEmpty) {
 			log.warn("Query process output contains empty fields - canonicalQuery: {}, expandedQueries: {}",
 					isCanonicalQueryEmpty, isExpandedQueriesEmpty);
 			return END;
 		}
 		else {
+			// DTO 完整时进入 Schema 召回阶段。
 			log.info("Query process output is valid, proceeding to schema recall");
 			return SCHEMA_RECALL_NODE;
 		}

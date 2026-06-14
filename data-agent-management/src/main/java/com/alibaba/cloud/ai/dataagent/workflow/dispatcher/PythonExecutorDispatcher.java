@@ -42,37 +42,43 @@ public class PythonExecutorDispatcher implements EdgeAction {
 
 	private final CodeExecutorProperties codeExecutorProperties;
 
+	// 注入代码执行配置，用于读取 Python 最大重试次数。
 	public PythonExecutorDispatcher(CodeExecutorProperties codeExecutorProperties) {
 		this.codeExecutorProperties = codeExecutorProperties;
 	}
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 根据执行成功、重试次数和 fallback 标记选择下一节点。
+	 */
 	@Override
 	public String apply(OverAllState state) throws Exception {
+		// fallback 表示节点已经决定不再执行代码，而是让分析节点输出降级说明。
 		boolean isFallbackMode = StateUtil.getObjectValue(state, PYTHON_FALLBACK_MODE, Boolean.class, false);
 		if (isFallbackMode) {
 			log.warn("Python 执行进入降级模式，跳过重试，直接进入分析节点。");
 			return PYTHON_ANALYZE_NODE;
 		}
 
+		// 缺失执行状态时按失败处理。
 		boolean isSuccess = StateUtil.getObjectValue(state, PYTHON_IS_SUCCESS, Boolean.class, false);
 		if (!isSuccess) {
+			// 读取执行器保存的 stderr/异常文本，用于日志和下一次代码修复。
 			String message = StateUtil.getStringValue(state, PYTHON_EXECUTE_NODE_OUTPUT);
 			log.error("Python Executor Node Error: {}", message);
+
+			// 生成节点每产出一版代码都会推进尝试次数。
 			int tries = StateUtil.getObjectValue(state, PYTHON_TRIES_COUNT, Integer.class, 0);
 			if (tries >= codeExecutorProperties.getPythonMaxTriesCount()) {
 				log.error("Python 执行失败且已超过最大重试次数（已尝试次数：{}），流程终止。", tries);
 				return END;
 			}
 			else {
+				// 未达到上限时回到生成节点，旧代码和错误会重新进入 prompt。
 				return PYTHON_GENERATE_NODE;
 			}
 		}
 
+		// 正常成功后进入分析节点，把 stdout 转成业务结论。
 		return PYTHON_ANALYZE_NODE;
 	}
 

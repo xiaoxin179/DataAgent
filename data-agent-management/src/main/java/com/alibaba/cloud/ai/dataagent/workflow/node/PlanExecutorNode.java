@@ -82,6 +82,7 @@ public class PlanExecutorNode implements NodeAction {
 		// 这不是最省成本的方案，但可以保证执行时拿到的是一份结构完整的计划。
 		Plan plan;
 		try {
+			// 从 PLANNER_NODE_OUTPUT 解析结构化 Plan。
 			plan = PlanProcessUtil.getPlan(state);
 		}
 		catch (Exception e) {
@@ -90,11 +91,13 @@ public class PlanExecutorNode implements NodeAction {
 					"Validation failed: The plan is not a valid JSON structure. Error: " + e.getMessage());
 		}
 
+		// 第一层校验：Plan 和 executionPlan 必须存在且非空。
 		if (!validateExecutionPlanStructure(plan)) {
 			return buildValidationResult(state, false,
 					"Validation failed: The generated plan is empty or has no execution steps.");
 		}
 
+		// 第二层校验：逐个检查工具名称和工具专属参数。
 		for (ExecutionStep step : plan.getExecutionPlan()) {
 			String validationResult = validateExecutionStep(step);
 			if (validationResult != null) {
@@ -111,8 +114,11 @@ public class PlanExecutorNode implements NodeAction {
 			return Map.of(PLAN_VALIDATION_STATUS, true, PLAN_NEXT_NODE, HUMAN_FEEDBACK_NODE);
 		}
 
+		// 当前步号由 SQL/Python 节点成功后推进。
 		int currentStep = PlanProcessUtil.getCurrentStepNumber(state);
 		List<ExecutionStep> executionPlan = plan.getExecutionPlan();
+
+		// 纯 NL2SQL 模式完成计划后直接 END，不再生成报告。
 		boolean isOnlyNl2Sql = state.value(IS_ONLY_NL2SQL, false);
 
 		// 当前步号大于计划总步数，说明计划已经跑完。
@@ -122,7 +128,10 @@ public class PlanExecutorNode implements NodeAction {
 					PLAN_VALIDATION_STATUS, true);
 		}
 
+		// 业务步号从 1 开始，因此读取 List 时减 1。
 		ExecutionStep executionStep = executionPlan.get(currentStep - 1);
+
+		// Planner 用 toolToUse 声明本步骤应进入哪个节点。
 		String toolToUse = executionStep.getToolToUse();
 		return determineNextNode(toolToUse);
 	}
@@ -133,25 +142,27 @@ public class PlanExecutorNode implements NodeAction {
 	 * `toolToUse` 本质上就是 Planner 产出的“执行节点名”，这里会在白名单内做一次检查后再放行。
 	 */
 	private Map<String, Object> determineNextNode(String toolToUse) {
+		// 普通执行节点必须位于后端白名单中，不能直接信任模型生成的任意字符串。
 		if (SUPPORTED_NODES.contains(toolToUse)) {
 			log.info("Determined next execution node: {}", toolToUse);
 			return Map.of(PLAN_NEXT_NODE, toolToUse, PLAN_VALIDATION_STATUS, true);
 		}
 		else if (HUMAN_FEEDBACK_NODE.equals(toolToUse)) {
+			// 人工反馈节点不是常规工具，但属于允许的控制节点。
 			log.info("Determined next execution node: {}", toolToUse);
 			return Map.of(PLAN_NEXT_NODE, toolToUse, PLAN_VALIDATION_STATUS, true);
 		}
 		else {
+			// 非法节点名写入校验错误，Dispatcher 会将流程退回 Planner 修复。
 			return Map.of(PLAN_VALIDATION_STATUS, false, PLAN_VALIDATION_ERROR, "Unsupported node type: " + toolToUse);
 		}
 	}
 
 	/**
- * `validateExecutionPlanStructure`：校验输入、配置或运行结果是否满足要求。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 校验计划对象及步骤列表是否存在。
+	 */
 	private boolean validateExecutionPlanStructure(Plan plan) {
+		// 三个条件缺一不可，否则无法按步执行。
 		return plan != null && plan.getExecutionPlan() != null && !plan.getExecutionPlan().isEmpty();
 	}
 
@@ -168,15 +179,18 @@ public class PlanExecutorNode implements NodeAction {
 	 * - 非空字符串表示失败原因。
 	 */
 	private String validateExecutionStep(ExecutionStep step) {
+		// toolToUse 为空或不在白名单时拒绝计划。
 		if (step.getToolToUse() == null || !SUPPORTED_NODES.contains(step.getToolToUse())) {
 			return "Validation failed: Plan contains an invalid tool name: '" + step.getToolToUse() + "' in step "
 					+ step.getStep();
 		}
 
+		// 每种工具都依赖参数对象，缺失时无法执行。
 		if (step.getToolParameters() == null) {
 			return "Validation failed: Tool parameters are missing for step " + step.getStep();
 		}
 
+		// 再按工具类型校验专属必填字段。
 		switch (step.getToolToUse()) {
 			case SQL_GENERATE_NODE:
 				if (!StringUtils.hasText(step.getToolParameters().getInstruction())) {
@@ -201,6 +215,7 @@ public class PlanExecutorNode implements NodeAction {
 				break;
 		}
 
+		// null 是该方法约定的“校验通过”结果。
 		return null;
 	}
 
@@ -211,10 +226,12 @@ public class PlanExecutorNode implements NodeAction {
 	 * 方便下游 Dispatcher 判断是否需要回到 Planner 进行修复。
 	 */
 	private Map<String, Object> buildValidationResult(OverAllState state, boolean isValid, String errorMessage) {
+		// 成功时只写状态，下一节点会在主 apply 流程中决定。
 		if (isValid) {
 			return Map.of(PLAN_VALIDATION_STATUS, true);
 		}
 		else {
+			// 失败时保留具体原因，并推进修复次数。
 			int repairCount = StateUtil.getObjectValue(state, PLAN_REPAIR_COUNT, Integer.class, 0);
 			return Map.of(PLAN_VALIDATION_STATUS, false, PLAN_VALIDATION_ERROR, errorMessage, PLAN_REPAIR_COUNT,
 					repairCount + 1);

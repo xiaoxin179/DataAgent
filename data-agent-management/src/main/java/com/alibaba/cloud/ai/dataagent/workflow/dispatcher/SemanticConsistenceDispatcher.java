@@ -37,19 +37,21 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_GENERATE_NODE
 public class SemanticConsistenceDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 把语义校验布尔值转换成 Graph 下一跳。
+	 */
 	@Override
 	public String apply(OverAllState state) {
+		// 缺失校验结果时按失败处理，避免未经验证的 SQL 被直接执行。
 		Boolean validate = (Boolean) state.value(SEMANTIC_CONSISTENCY_NODE_OUTPUT).orElse(false);
 		log.info("语义一致性校验结果: {}，开始进行路由判断。", validate);
+
+		// 校验通过后才允许进入真实数据库执行。
 		if (validate) {
 			log.info("语义一致性校验通过，跳转到 SQL 执行节点。");
 			return SQL_EXECUTE_NODE;
 		}
 		else {
+			// 校验失败时，SqlGenerateNode 会读取状态中的失败原因重新生成。
 			log.info("语义一致性校验未通过，跳转回 SQL 生成节点。");
 			return SQL_GENERATE_NODE;
 		}

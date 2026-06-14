@@ -110,10 +110,17 @@ public class TableRelationNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 标准问题用于让模型从候选 Schema 中做相关性精筛。
 		String canonicalQuery = StateUtil.getCanonicalQuery(state);
+
+		// 业务证据帮助识别字段与业务术语的对应关系。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+
+		// SchemaRecallNode 分别保存候选表文档和字段文档。
 		List<Document> tableDocuments = StateUtil.getDocumentList(state, TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT);
 		List<Document> columnDocuments = StateUtil.getDocumentList(state, COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT);
+
+		// agentId 用于查询数据源、逻辑外键和语义模型。
 		String agentIdStr = StateUtil.getStringValue(state, AGENT_ID);
 
 		// 先解析出当前 Agent 对应的数据库配置，最关键的是拿到 SQL 方言。
@@ -124,10 +131,14 @@ public class TableRelationNode implements NodeAction {
 		List<String> logicalForeignKeys = getLogicalForeignKeys(Long.valueOf(agentIdStr), tableDocuments);
 		log.info("Found {} logical foreign keys for agent: {}", logicalForeignKeys.size(), agentIdStr);
 
+		// 把召回文档恢复成可供模型精筛的初始 SchemaDTO。
 		SchemaDTO initialSchema = buildInitialSchema(agentIdStr, columnDocuments, tableDocuments, agentDbConfig,
 				logicalForeignKeys);
 
+		// resultMap 会在异步 schemaFlux 回调中继续写入最终 Schema 和语义模型。
 		Map<String, Object> resultMap = new HashMap<>();
+
+		// 方言和重试初始状态可以在模型流完成前同步写好。
 		resultMap.put(DB_DIALECT_TYPE, agentDbConfig.getDialectType());
 		resultMap.put(TABLE_RELATION_RETRY_COUNT, 0);
 		resultMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, "");
@@ -139,6 +150,7 @@ public class TableRelationNode implements NodeAction {
 					resultMap.put(TABLE_RELATION_OUTPUT, result);
 
 					// 表筛选完成后，再反查这些表对应的语义模型，作为 SQL 生成阶段的补充上下文。
+					// 只查询最终保留表对应的语义模型，避免无关上下文膨胀 prompt。
 					List<String> tableNames = result.getTable().stream().map(TableDTO::getName).toList();
 					List<SemanticModel> semanticModels = semanticModelService
 						.getByAgentIdAndTableNames(Long.valueOf(agentIdStr), tableNames);
@@ -176,17 +188,24 @@ public class TableRelationNode implements NodeAction {
 	 */
 	private SchemaDTO buildInitialSchema(String agentId, List<Document> columnDocuments, List<Document> tableDocuments,
 			DbConfigBO agentDbConfig, List<String> logicalForeignKeys) {
+		// 创建空 Schema 容器，下面分阶段填充数据库、表、列和外键。
 		SchemaDTO schemaDTO = new SchemaDTO();
 
+		// 从数据源配置写入数据库/schema 名称。
 		schemaService.extractDatabaseName(schemaDTO, agentDbConfig);
+
+		// 根据召回 Document metadata 恢复表和字段结构。
 		schemaService.buildSchemaFromDocuments(agentId, columnDocuments, tableDocuments, schemaDTO);
 
+		// 数据库真实外键之外，还要合并业务侧维护的逻辑关系。
 		if (logicalForeignKeys != null && !logicalForeignKeys.isEmpty()) {
 			List<String> existingForeignKeys = schemaDTO.getForeignKeys();
 			if (existingForeignKeys == null || existingForeignKeys.isEmpty()) {
+				// 没有物理外键时直接使用逻辑外键列表。
 				schemaDTO.setForeignKeys(logicalForeignKeys);
 			}
 			else {
+				// 同时存在物理和逻辑外键时复制后合并，避免修改原列表。
 				List<String> allForeignKeys = new ArrayList<>(existingForeignKeys);
 				allForeignKeys.addAll(logicalForeignKeys);
 				schemaDTO.setForeignKeys(allForeignKeys);
@@ -194,6 +213,7 @@ public class TableRelationNode implements NodeAction {
 			log.info("Merged {} logical foreign keys into schema for agent: {}", logicalForeignKeys.size(), agentId);
 		}
 
+		// 返回待模型精筛的完整初始 Schema。
 		return schemaDTO;
 	}
 
@@ -205,8 +225,10 @@ public class TableRelationNode implements NodeAction {
 	 */
 	private Flux<ChatResponse> processSchemaSelection(SchemaDTO schemaDTO, String input, String evidence,
 			OverAllState state, DbConfigBO agentDbConfig, Consumer<SchemaDTO> dtoConsumer) {
+		// SQL 生成阶段发现 Schema 缺失时会把补充建议写回该状态。
 		String schemaAdvice = StateUtil.getStringValue(state, SQL_GENERATE_SCHEMA_MISSING_ADVICE, null);
 
+		// fineSelect 返回模型流，并通过 dtoConsumer 交付最终解析后的 SchemaDTO。
 		Flux<ChatResponse> schemaFlux;
 		if (schemaAdvice != null) {
 			log.info("[{}] Processing with schema supplement advice: {}", this.getClass().getSimpleName(),
@@ -218,6 +240,7 @@ public class TableRelationNode implements NodeAction {
 			schemaFlux = nl2SqlService.fineSelect(schemaDTO, input, evidence, null, agentDbConfig, dtoConsumer);
 		}
 
+		// 在真实模型输出前后添加提示和 JSON 边界标记。
 		return Flux
 			.just(ChatResponseUtil.createResponse("正在选择合适的数据表...\n"),
 					ChatResponseUtil.createPureResponse(TextType.JSON.getStartSign()))

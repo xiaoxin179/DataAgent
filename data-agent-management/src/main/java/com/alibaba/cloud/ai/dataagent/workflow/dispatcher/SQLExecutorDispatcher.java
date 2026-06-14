@@ -36,18 +36,20 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_REGENERATE_RE
 public class SQLExecutorDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 根据 SQL 执行阶段写入的重试原因决定重生成还是推进计划。
+	 */
 	@Override
 	public String apply(OverAllState state) {
+		// SqlExecuteNode 会把成功或失败来源封装到 SqlRetryDto 中。
 		SqlRetryDto retryDto = StateUtil.getObjectValue(state, SQL_REGENERATE_REASON, SqlRetryDto.class);
+
+		// 数据库执行失败时回到 SQL 生成节点，并让它读取错误原因修复旧 SQL。
 		if (retryDto.sqlExecuteFail()) {
 			log.warn("SQL 执行失败，需要重新生成。");
 			return SQL_GENERATE_NODE;
 		}
 		else {
+			// 没有执行失败标记表示当前计划步骤完成，回执行器选择下一步骤。
 			log.info("SQL 执行成功，返回 PlanExecutorNode。");
 			return PLAN_EXECUTOR_NODE;
 		}

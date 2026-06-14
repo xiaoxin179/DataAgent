@@ -77,8 +77,12 @@ public class SqlGenerateNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 统计当前计划步骤已经生成过多少版 SQL。
 		int count = state.value(SQL_GENERATE_COUNT, 0);
+
+		// 达到上限后不再调用模型，输出原因并写入 END 标记。
 		if (count >= properties.getMaxSqlRetryCount()) {
+			// 读取当前计划步骤，用于给用户展示是哪一步失败。
 			ExecutionStep executionStep = PlanProcessUtil.getCurrentExecutionStep(state);
 			String sqlGenerateOutput = String.format(
 					"步骤[%d]中，SQL 生成重试次数已达到上限。最大重试次数：%d，当前已尝试次数：%d，当前步骤内容：\n%s",
@@ -86,7 +90,10 @@ public class SqlGenerateNode implements NodeAction {
 					executionStep.getToolParameters().getInstruction());
 			log.error("SQL generation failed, reason: {}", sqlGenerateOutput);
 
+			// 构造一条只包含失败说明的展示流。
 			Flux<ChatResponse> preFlux = Flux.just(ChatResponseUtil.createResponse(sqlGenerateOutput));
+
+			// 流结束后将 SQL 输出设为 END，并重置计数。
 			Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(
 					this.getClass(), state, "正在进行重试评估...", "重试评估完成",
 					retryOutput -> Map.of(SQL_GENERATE_OUTPUT, StateGraph.END, SQL_GENERATE_COUNT, 0), preFlux);
@@ -96,26 +103,33 @@ public class SqlGenerateNode implements NodeAction {
 		// Planner 已经把当前步骤的任务说明写进状态，这里只需要关心“这一步要做什么 SQL”。
 		String promptForSql = getCurrentExecutionStepInstruction(state);
 
+		// displayMessage 告诉前端本轮是首次生成还是修复生成。
 		String displayMessage;
 		Flux<String> sqlFlux;
+
+		// 结构化重试 DTO 区分数据库执行失败和语义校验失败。
 		SqlRetryDto retryDto = StateUtil.getObjectValue(state, SQL_REGENERATE_REASON, SqlRetryDto.class,
 				SqlRetryDto.empty());
 
+		// 数据库执行失败时，把旧 SQL、数据库错误和步骤说明一起交给模型修复。
 		if (retryDto.sqlExecuteFail()) {
 			displayMessage = "检测到 SQL 执行异常，开始重新生成 SQL...";
 			sqlFlux = handleRetryGenerateSql(state, StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, ""),
 					retryDto.reason(), promptForSql);
 		}
 		else if (retryDto.semanticFail()) {
+			// 语义失败时使用相同修复入口，但错误原因来自 SemanticConsistencyNode。
 			displayMessage = "语义一致性校验未通过，开始重新生成 SQL...";
 			sqlFlux = handleRetryGenerateSql(state, StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, ""),
 					retryDto.reason(), promptForSql);
 		}
 		else {
+			// 没有失败原因表示首次生成。
 			displayMessage = "开始生成 SQL...";
 			sqlFlux = handleGenerateSql(state, promptForSql);
 		}
 
+		// 先准备默认失败状态；只有模型流正常结束后才会用实际 SQL 覆盖 END。
 		Map<String, Object> result = new HashMap<>(Map.of(SQL_GENERATE_OUTPUT, StateGraph.END, SQL_GENERATE_COUNT,
 				count + 1, SQL_REGENERATE_REASON, SqlRetryDto.empty()));
 
@@ -123,8 +137,10 @@ public class SqlGenerateNode implements NodeAction {
 		// - 用户先看到生成提示和 SQL 文本。
 		// - 流结束后再统一 trim 并写回最终 SQL。
 		StringBuilder sqlCollector = new StringBuilder();
+		// 在 SQL 前发送提示和类型起始标记。
 		Flux<ChatResponse> preFlux = Flux.just(ChatResponseUtil.createResponse(displayMessage),
 				ChatResponseUtil.createPureResponse(TextType.SQL.getStartSign()));
+		// 每个 SQL token 一边进入 collector，一边转成 ChatResponse 发给前端。
 		Flux<ChatResponse> displayFlux = preFlux
 			.concatWith(sqlFlux.doOnNext(sqlCollector::append).map(ChatResponseUtil::createPureResponse))
 			.concatWith(Flux.just(ChatResponseUtil.createPureResponse(TextType.SQL.getEndSign()),
@@ -132,6 +148,7 @@ public class SqlGenerateNode implements NodeAction {
 
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, v -> {
+					// 模型流完成后清理代码块和首尾空白，得到最终可执行 SQL。
 					String sql = nl2SqlService.sqlTrim(sqlCollector.toString());
 					result.put(SQL_GENERATE_OUTPUT, sql);
 					return result;
@@ -147,11 +164,19 @@ public class SqlGenerateNode implements NodeAction {
 	 */
 	private Flux<String> handleRetryGenerateSql(OverAllState state, String originalSql, String errorMsg,
 			String executionDescription) {
+		// 生成 SQL 所需的业务证据。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+
+		// 经过召回和关系整理后的结构化 Schema。
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+
+		// 消除多轮指代后的标准用户问题。
 		String userQuery = StateUtil.getCanonicalQuery(state);
+
+		// 数据库方言影响函数、分页和标识符语法。
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
 
+		// 把首次生成和重试生成需要的全部上下文封装成统一 DTO。
 		SqlGenerationDTO sqlGenerationDTO = SqlGenerationDTO.builder()
 			.evidence(evidence)
 			.query(userQuery)
@@ -162,6 +187,7 @@ public class SqlGenerateNode implements NodeAction {
 			.dialect(dialect)
 			.build();
 
+		// Nl2SqlService 返回字符串 token 流，当前节点负责包装为 Graph 流。
 		return nl2SqlService.generateSql(sqlGenerationDTO);
 	}
 

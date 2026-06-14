@@ -67,7 +67,10 @@ public class PythonExecuteNode implements NodeAction {
 
 	public PythonExecuteNode(CodePoolExecutorService codePoolExecutor, JsonParseUtil jsonParseUtil,
 			CodeExecutorProperties codeExecutorProperties) {
+		// 保存统一代码执行服务，具体实现可以是本地进程、Docker 或模拟器。
 		this.codePoolExecutor = codePoolExecutor;
+
+		// 复用项目统一 ObjectMapper，确保 JSON 配置一致。
 		this.objectMapper = JsonUtil.getObjectMapper();
 		this.jsonParseUtil = jsonParseUtil;
 		this.codeExecutorProperties = codeExecutorProperties;
@@ -84,18 +87,25 @@ public class PythonExecuteNode implements NodeAction {
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 		try {
+			// 读取上一节点生成的 Python 代码。
 			String pythonCode = StateUtil.getStringValue(state, PYTHON_GENERATE_NODE_OUTPUT);
+
+			// Python 代码的数据输入来自最近一次 SQL 查询的结构化行列表。
 			List<Map<String, String>> sqlResults = StateUtil.hasValue(state, SQL_RESULT_LIST_MEMORY)
 					? StateUtil.getListValue(state, SQL_RESULT_LIST_MEMORY) : new ArrayList<>();
 
+			// 当前次数用于判断失败后是继续重试还是进入 fallback。
 			int triesCount = StateUtil.getObjectValue(state, PYTHON_TRIES_COUNT, Integer.class, 0);
 
+			// 将代码和 SQL 数据序列化为执行器统一请求。
 			CodePoolExecutorService.TaskRequest taskRequest = new CodePoolExecutorService.TaskRequest(pythonCode,
 					objectMapper.writeValueAsString(sqlResults), null);
 
 			// `CodePoolExecutorService` 是真正对接代码运行容器/执行池的服务。
 			// 它返回标准输出、标准错误和异常信息，供上层统一处理。
 			CodePoolExecutorService.TaskResponse taskResponse = this.codePoolExecutor.runTask(taskRequest);
+
+			// 执行器会统一汇总退出状态、stdout、stderr 和异常信息。
 			if (!taskResponse.isSuccess()) {
 				String errorMsg = "Python Execute Failed!\nStdOut: " + taskResponse.stdOut() + "\nStdErr: "
 						+ taskResponse.stdErr() + "\nExceptionMsg: " + taskResponse.exceptionMsg();
@@ -106,23 +116,28 @@ public class PythonExecuteNode implements NodeAction {
 					log.error("Python 执行失败且已超过最大重试次数（已尝试次数：{}），启动降级兜底逻辑。错误信息: {}", triesCount,
 							errorMsg);
 
+					// 使用空 JSON 作为可解析的降级输出，让下游分析节点仍能继续。
 					String fallbackOutput = "{}";
 
+					// 构造只用于前端说明降级状态的展示流。
 					Flux<ChatResponse> fallbackDisplayFlux = Flux.create(emitter -> {
 						emitter.next(ChatResponseUtil.createResponse("开始执行 Python 代码..."));
 						emitter.next(ChatResponseUtil.createResponse("Python 代码执行失败且已超过最大重试次数，采用降级策略继续处理。"));
 						emitter.complete();
 					});
 
+					// 流完成后写入失败状态和 fallback 标记。
 					Flux<GraphResponse<StreamingOutput>> fallbackGenerator = FluxUtil
 						.createStreamingGeneratorWithMessages(this.getClass(), state,
 								v -> Map.of(PYTHON_EXECUTE_NODE_OUTPUT, fallbackOutput, PYTHON_IS_SUCCESS, false,
 										PYTHON_FALLBACK_MODE, true),
 								fallbackDisplayFlux);
 
+					// 交给 Graph 消费展示流并合并最终状态。
 					return Map.of(PYTHON_EXECUTE_NODE_OUTPUT, fallbackGenerator);
 				}
 
+				// 未达到上限时抛出异常，下面统一转换为可重试的错误状态。
 				throw new RuntimeException(errorMsg);
 			}
 
@@ -133,10 +148,12 @@ public class PythonExecuteNode implements NodeAction {
 			if (value != null) {
 				stdout = objectMapper.writeValueAsString(value);
 			}
+			// Lambda 捕获的局部变量必须是 final 或 effectively final。
 			String finalStdout = stdout;
 
 			log.info("Python Execute Success! StdOut: {}", finalStdout);
 
+			// 将标准输出放在 JSON 类型边界中流式展示。
 			Flux<ChatResponse> displayFlux = Flux.create(emitter -> {
 				emitter.next(ChatResponseUtil.createResponse("开始执行 Python 代码..."));
 				emitter.next(ChatResponseUtil.createResponse("标准输出："));
@@ -147,6 +164,7 @@ public class PythonExecuteNode implements NodeAction {
 				emitter.complete();
 			});
 
+			// 正常完成后把 stdout 和成功标记写回 state。
 			Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(
 					this.getClass(), state,
 					v -> Map.of(PYTHON_EXECUTE_NODE_OUTPUT, finalStdout, PYTHON_IS_SUCCESS, true), displayFlux);
@@ -154,18 +172,22 @@ public class PythonExecuteNode implements NodeAction {
 			return Map.of(PYTHON_EXECUTE_NODE_OUTPUT, generator);
 		}
 		catch (Exception e) {
+			// 包括执行失败、stdout 解析失败等异常都会进入统一失败分支。
 			String errorMessage = e.getMessage();
 			log.error("Python Execute Exception: {}", errorMessage);
 
+			// 保存错误文本和失败标记，Dispatcher 会结合次数决定是否重新生成代码。
 			Map<String, Object> errorResult = Map.of(PYTHON_EXECUTE_NODE_OUTPUT, errorMessage, PYTHON_IS_SUCCESS,
 					false);
 
+			// 同步向前端说明本次代码执行失败。
 			Flux<ChatResponse> errorDisplayFlux = Flux.create(emitter -> {
 				emitter.next(ChatResponseUtil.createResponse("开始执行 Python 代码..."));
 				emitter.next(ChatResponseUtil.createResponse("Python 代码执行失败: " + errorMessage));
 				emitter.complete();
 			});
 
+			// displayFlux 完成后返回预先构造的 errorResult。
 			var generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(), state, v -> errorResult,
 					errorDisplayFlux);
 

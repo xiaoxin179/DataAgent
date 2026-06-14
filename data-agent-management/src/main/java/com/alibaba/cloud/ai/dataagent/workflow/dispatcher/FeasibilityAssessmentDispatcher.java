@@ -38,10 +38,8 @@ import static com.alibaba.cloud.ai.graph.StateGraph.END;
 public class FeasibilityAssessmentDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 按可行性评估文本协议判断是否进入规划阶段。
+	 */
 	@Override
 	public String apply(OverAllState state) throws Exception {
 		// 这里的 value 与 `resources/feasibility-assessment.txt` 约定的输出格式保持一致。
@@ -51,11 +49,13 @@ public class FeasibilityAssessmentDispatcher implements EdgeAction {
 		// 【需求内容】：查询所有“核心用户”的数量
 		String value = state.value(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, END);
 
+		// 只有明确识别为数据分析的需求才值得继续生成执行计划。
 		if (value != null && value.contains("【需求类型】：《数据分析》")) {
 			log.info("[FeasibilityAssessmentNodeDispatcher] 需求类型为数据分析，进入 PlannerNode。");
 			return PLANNER_NODE;
 		}
 		else {
+			// 闲聊、信息不足或非数据分析需求在这里结束。
 			log.info("[FeasibilityAssessmentNodeDispatcher] 需求类型非数据分析，返回 END。");
 			return END;
 		}

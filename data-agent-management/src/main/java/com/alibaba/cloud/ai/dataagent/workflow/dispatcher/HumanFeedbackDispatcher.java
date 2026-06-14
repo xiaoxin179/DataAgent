@@ -32,12 +32,11 @@ import static com.alibaba.cloud.ai.graph.StateGraph.END;
 public class HumanFeedbackDispatcher implements EdgeAction {
 
 	/**
- * `apply`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 将 HumanFeedbackNode 写入的逻辑状态转换为 Graph 下一跳。
+	 */
 	@Override
 	public String apply(OverAllState state) throws Exception {
+		// 没有明确下一跳时按 END 处理，避免误执行计划。
 		String nextNode = (String) state.value("human_next_node", END);
 
 		// WAIT_FOR_FEEDBACK 表示前端还没提交审批结果。
@@ -46,6 +45,7 @@ public class HumanFeedbackDispatcher implements EdgeAction {
 			return END;
 		}
 
+		// 已有反馈时，节点会写入 PlannerNode、PlanExecutorNode 或 END。
 		return nextNode;
 	}
 

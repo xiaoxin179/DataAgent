@@ -67,9 +67,13 @@ public class FeasibilityAssessmentNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 规范化问题代表用户最终想分析的业务目标。
 		String canonicalQuery = StateUtil.getCanonicalQuery(state);
+		// 召回并整理后的 Schema 用于判断现有数据是否足以回答问题。
 		SchemaDTO recalledSchema = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+		// 业务证据补充数据库结构本身无法表达的指标口径。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+		// 历史对话可帮助识别“它”“上个月”等依赖上下文的表达。
 		String multiTurn = StateUtil.getStringValue(state, MULTI_TURN_CONTEXT, "(无)");
 
 		// Prompt 同时注入问题、Schema、证据和多轮上下文，避免模型只凭一句话做空判断。
@@ -77,14 +81,18 @@ public class FeasibilityAssessmentNode implements NodeAction {
 				multiTurn);
 		log.debug("Built feasibility assessment prompt as follows \n {} \n", prompt);
 
+		// 请求模型输出带固定约定字段的可行性判断文本。
 		Flux<ChatResponse> responseFlux = llmService.callUser(prompt);
 
+		// 包装成 Graph 流，在前端显示阶段提示，并在完成时保存完整判断结果。
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "正在进行可行性评估...", "可行性评估完成。", llmOutput -> {
+					// 去除模型输出首尾空白，避免 Dispatcher 的文本匹配受到换行影响。
 					String assessmentResult = llmOutput.trim();
 					log.info("Feasibility assessment result: {}", assessmentResult);
 					return Map.of(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, assessmentResult);
 				}, responseFlux);
+		// Dispatcher 会读取该 generator 最终写入的文本并选择下一节点。
 		return Map.of(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, generator);
 	}
 

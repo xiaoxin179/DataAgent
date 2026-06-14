@@ -34,76 +34,84 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Data
 public class StreamContext {
 
+	// 保存 Graph 输出流的订阅句柄，浏览器断开时通过 dispose() 主动取消后台消费。
 	private Disposable disposable;
 
+	// 保存当前 HTTP 请求对应的 SSE 生产端，GraphServiceImpl 通过它向前端推送事件。
 	private Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink;
-	//span 是 OpenTelemetry / Langfuse 这类观测系统用的链路追踪对象。任务完成或失败时，需要结束这个 span。
+
+	// OpenTelemetry/Langfuse 链路追踪对象，任务完成、异常或取消时必须结束。
 	private Span span;
 
+	// 记录当前流式文本处于普通文本还是 JSON 等结构化块中。
 	private TextType textType;
 
-	/**
- * `StringBuilder`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+	// 累计所有真正发送给前端的正文，供 tracing 在结束时记录完整输出。
+	// final 只保证引用不被替换，StringBuilder 内部内容仍可以持续 append。
 	private final StringBuilder outputCollector = new StringBuilder();
 
+	/**
+	 * 将一个非空流式片段追加到完整输出中。
+	 * @param chunk Graph 节点本次产生的文本片段
+	 */
 	public void appendOutput(String chunk) {
+		// 使用同一个 StringBuilder 按到达顺序拼接所有 chunk。
 		outputCollector.append(chunk);
 	}
 
+	/**
+	 * 获取当前已经累计的完整输出。
+	 * @return 所有 chunk 拼接后的字符串
+	 */
 	public String getCollectedOutput() {
+		// toString() 返回当前快照，不会把内部 StringBuilder 暴露给调用方。
 		return outputCollector.toString();
 	}
 
-	/**
- * `AtomicBoolean`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+	// 一次性清理开关；compareAndSet 保证多个并发收尾路径中只有一个真正执行 cleanup。
 	private final AtomicBoolean cleaned = new AtomicBoolean(false);
 
 	/**
- * `cleanup`：清理临时状态、资源或历史数据。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+	 * 幂等地释放 Reactor 订阅和 SSE sink。
+	 */
 	public void cleanup() {
-		// 使用 compareAndSet 确保只执行一次清理
+		// 只有第一个把 false 改成 true 的线程可以继续；其他线程直接返回。
 		if (!cleaned.compareAndSet(false, true)) {
 			return;
 		}
 
-		// 清理 Disposable
+		// 先复制字段引用，避免清理过程中字段被其他线程重新读取或修改。
 		Disposable localDisposable = disposable;
+
+		// 存在仍活动的订阅时，主动取消 Graph 输出消费。
 		if (localDisposable != null && !localDisposable.isDisposed()) {
 			try {
 				localDisposable.dispose();
 			}
 			catch (Exception e) {
-				// 忽略清理过程中的异常
+				// 清理属于兜底动作，取消失败不应阻止后续 sink 完成。
 			}
 		}
 
-		// 清理 Sink
+		// 同样复制 sink 引用，保证下面的检查和调用针对同一个对象。
 		Sinks.Many<ServerSentEvent<GraphNodeResponse>> localSink = sink;
+
+		// 完成 sink，让仍在等待的下游收到 onComplete。
 		if (localSink != null) {
 			try {
 				localSink.tryEmitComplete();
 			}
 			catch (Exception e) {
-				// 忽略清理过程中的异常
+				// sink 可能已经终止；重复完成失败不再向外抛出。
 			}
 		}
 	}
 
 	/**
- * `isCleaned`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+	 * 判断上下文是否已经进入清理状态。
+	 */
 	public boolean isCleaned() {
+		// AtomicBoolean.get() 提供并发可见性，其他线程能及时看到 cleanup 的结果。
 		return cleaned.get();
 	}
 

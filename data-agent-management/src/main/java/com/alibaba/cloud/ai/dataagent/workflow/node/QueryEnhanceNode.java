@@ -71,17 +71,23 @@ public class QueryEnhanceNode implements NodeAction {
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 
+		// INPUT_KEY 保存本轮用户最原始的自然语言问题。
 		String userInput = StateUtil.getStringValue(state, INPUT_KEY);
 		log.info("User input for query enhance: {}", userInput);
 
+		// 业务知识证据帮助模型补全缩写、指标和口径。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+		// 多轮上下文可选；缺失时用“无”明确告诉模型没有历史信息。
 		String multiTurn = StateUtil.getStringValue(state, MULTI_TURN_CONTEXT, "(无)");
 
+		// PromptHelper 统一组织上下文，避免节点手工拼接导致模板不一致。
 		String prompt = PromptHelper.buildQueryEnhancePrompt(multiTurn, userInput, evidence);
 		log.debug("Built query enhance prompt as follows \n {} \n", prompt);
 
+		// 模型响应是 Flux，每个 ChatResponse 只包含一部分 JSON 文本。
 		Flux<ChatResponse> responseFlux = llmService.callUser(prompt);
 
+		// 前置事件打开 JSON 标记，后置事件关闭标记并提示完成。
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGenerator(this.getClass(), state,
 				responseFlux,
 				Flux.just(ChatResponseUtil.createResponse("正在进行问题增强..."),
@@ -90,6 +96,7 @@ public class QueryEnhanceNode implements NodeAction {
 						ChatResponseUtil.createResponse("\n问题增强完成")),
 				this::handleQueryEnhance);
 
+		// Graph 订阅 generator 后，handleQueryEnhance 才会收到完整模型输出。
 		return Map.of(QUERY_ENHANCE_NODE_OUTPUT, generator);
 	}
 
@@ -100,11 +107,14 @@ public class QueryEnhanceNode implements NodeAction {
 	 * 如果解析失败，不直接抛异常中断流程，而是返回空 Map，让后续节点按缺省策略继续工作。
 	 */
 	private Map<String, Object> handleQueryEnhance(String llmOutput) {
+		// 去掉 ```json 等 Markdown 外壳，只保留可解析的 JSON 正文。
 		String enhanceResult = MarkdownParserUtil.extractRawText(llmOutput.trim());
 		log.info("Query enhance result: {}", enhanceResult);
 
+		// 先声明为 null，解析失败时可统一走空结果分支。
 		QueryEnhanceOutputDTO queryEnhanceOutputDTO = null;
 		try {
+			// JsonParseUtil 会在格式错误时最多调用 LLM 修复三次。
 			queryEnhanceOutputDTO = jsonParseUtil.tryConvertToObject(enhanceResult, QueryEnhanceOutputDTO.class);
 			log.info("Successfully parsed query enhance result: {}", queryEnhanceOutputDTO);
 		}
@@ -112,9 +122,11 @@ public class QueryEnhanceNode implements NodeAction {
 			log.error("Failed to parse query enhance result: {}", enhanceResult, e);
 		}
 
+		// 无法得到合法 DTO 时不写入错误类型的数据。
 		if (queryEnhanceOutputDTO == null) {
 			return Map.of();
 		}
+		// 成功时把结构化 DTO 写入状态，后续节点可读取 canonicalQuery。
 		return Map.of(QUERY_ENHANCE_NODE_OUTPUT, queryEnhanceOutputDTO);
 	}
 

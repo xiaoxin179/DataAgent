@@ -80,14 +80,18 @@ public class SchemaRecallNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 问题增强节点已经把原始问题转换成结构化 DTO。
 		QueryEnhanceOutputDTO queryEnhanceOutputDTO = StateUtil.getObjectValue(state, QUERY_ENHANCE_NODE_OUTPUT,
 				QueryEnhanceOutputDTO.class);
+		// 使用规范化问题执行向量召回，比直接使用口语化原始输入更稳定。
 		String input = queryEnhanceOutputDTO.getCanonicalQuery();
+		// agentId 用于确定该智能体绑定的是哪一个数据源。
 		String agentId = StateUtil.getStringValue(state, AGENT_ID);
 
 		// 每个智能体可能绑定多个数据源，但运行态通常只有一个“当前激活数据源”参与本次分析。
 		Integer datasourceId = agentDatasourceMapper.selectActiveDatasourceIdByAgentId(Long.valueOf(agentId));
 
+		// 无活动数据源时无法做 Schema 召回，进入可展示的失败分支。
 		if (datasourceId == null) {
 			log.warn("Agent {} has no active datasource", agentId);
 			String noDataSourceMessage = """
@@ -100,6 +104,7 @@ public class SchemaRecallNode implements NodeAction {
 					流程已终止。
 					""";
 
+			// 手工创建展示流，把原因发送给前端后正常完成，避免连接悬挂。
 			Flux<ChatResponse> displayFlux = Flux.create(emitter -> {
 				emitter.next(ChatResponseUtil.createResponse(noDataSourceMessage));
 				emitter.complete();
@@ -117,7 +122,9 @@ public class SchemaRecallNode implements NodeAction {
 		// 先召回表，再根据命中的表名去拉字段文档，减少字段级检索噪声。
 		List<Document> tableDocuments = new ArrayList<>(
 				schemaService.getTableDocumentsByDatasource(datasourceId, input));
+		// 从召回到的表文档 metadata 中提取表名，作为字段检索的过滤条件。
 		List<String> recalledTableNames = extractTableName(tableDocuments);
+		// 只查询命中表的字段，避免把整个数据库的列都塞进后续 Prompt。
 		List<Document> columnDocuments = schemaService.getColumnDocumentsByTableName(datasourceId, recalledTableNames);
 
 		String failMessage = """
@@ -133,20 +140,26 @@ public class SchemaRecallNode implements NodeAction {
 
 		// 这里没有真正的 LLM token 流，因此通过 `Flux.create` 手工发出过程提示。
 		Flux<ChatResponse> displayFlux = Flux.create(emitter -> {
+			// 第一个事件提示召回阶段已经开始。
 			emitter.next(ChatResponseUtil.createResponse("开始初步召回 Schema 信息..."));
+			// 第二个事件报告命中数量和表名，便于观察召回质量。
 			emitter.next(ChatResponseUtil.createResponse(
 					"初步表召回完成，数量: " + tableDocuments.size() + "，表名: " + String.join(", ", recalledTableNames)));
+			// 没有命中表时追加具体排查建议。
 			if (tableDocuments.isEmpty()) {
 				emitter.next(ChatResponseUtil.createResponse(failMessage));
 			}
+			// 最后发送阶段完成事件并关闭 Flux。
 			emitter.next(ChatResponseUtil.createResponse("初步 Schema 召回完成。"));
 			emitter.complete();
 		});
 
+		// 展示流结束时，把表文档和字段文档同时写入 Graph state。
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, currentState -> Map.of(TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT, tableDocuments,
 						COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT, columnDocuments), displayFlux);
 
+		// 当前节点的直接返回值仍是可订阅的生成器。
 		return Map.of(SCHEMA_RECALL_NODE_OUTPUT, generator);
 	}
 
@@ -157,9 +170,13 @@ public class SchemaRecallNode implements NodeAction {
 	 * 这里约定表名保存在 metadata 的 `name` 字段，因此后续所有 schema 相关服务都依赖这个约定。
 	 */
 	private static List<String> extractTableName(List<Document> tableDocuments) {
+		// 使用新列表收集合法表名，不修改传入文档集合。
 		List<String> tableNames = new ArrayList<>();
+		// 逐个读取每份表文档的 metadata。
 		for (Document document : tableDocuments) {
+			// SchemaService 在建立索引时把真实表名写入 name 字段。
 			String name = (String) document.getMetadata().get("name");
+			// 忽略缺失或空表名，避免后续查询产生无效过滤条件。
 			if (name != null && !name.isEmpty()) {
 				tableNames.add(name);
 			}

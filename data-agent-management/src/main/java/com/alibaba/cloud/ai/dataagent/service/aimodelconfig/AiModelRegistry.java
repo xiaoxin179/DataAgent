@@ -69,21 +69,30 @@ public class AiModelRegistry {
 	 * 而不是底层模型细节。
 	 */
 	public ChatClient getChatClient() {
+		// 第一次无锁检查：缓存已经存在时直接返回，避免每次模型调用都进入 synchronized。
 		if (currentChatClient == null) {
+			// 初始化过程必须串行，防止多个请求同时创建多个模型客户端。
 			synchronized (this) {
+				// 获得锁后再次检查，因为等待锁期间可能已有其他线程完成初始化。
 				if (currentChatClient == null) {
 					log.info("Initializing global ChatClient...");
 					try {
+						// 从数据库读取当前启用的 CHAT 类型配置。
 						ModelConfigDTO config = modelConfigDataService.getActiveConfigByType(ModelType.CHAT);
+						// 没有启用配置时暂不创建，后面的统一检查会给出明确错误。
 						if (config != null) {
+							// 工厂把数据库配置转换成真正可调用的 ChatModel。
 							ChatModel chatModel = modelFactory.createChatModel(config);
+							// 业务层统一通过 ChatClient 使用模型，因此在这里再包装一层。
 							currentChatClient = ChatClient.builder(chatModel).build();
 						}
 					}
 					catch (Exception e) {
+						// 初始化异常先完整记录，随后由 null 检查转换为面向配置的错误提示。
 						log.error("Failed to initialize ChatClient: {}", e.getMessage(), e);
 					}
 
+					// 无配置或创建失败都不能继续执行聊天请求。
 					if (currentChatClient == null) {
 						throw new RuntimeException(
 								"No active CHAT model configured. Please configure it in the dashboard.");
@@ -91,6 +100,7 @@ public class AiModelRegistry {
 				}
 			}
 		}
+		// 返回 volatile 缓存，后续请求会复用同一个线程安全客户端。
 		return currentChatClient;
 	}
 
@@ -106,20 +116,27 @@ public class AiModelRegistry {
 	 * - Dummy 模型的目标不是提供真实能力，而是让系统先启动，再提示用户补配置
 	 */
 	public EmbeddingModel getEmbeddingModel() {
+		// 缓存命中时不加锁，降低向量检索高频调用的同步成本。
 		if (currentEmbeddingModel == null) {
+			// 只有首次初始化或 refresh 后才进入同步区。
 			synchronized (this) {
+				// 双重检查避免等待锁的线程重复创建模型。
 				if (currentEmbeddingModel == null) {
 					log.info("Initializing global EmbeddingModel...");
 					try {
+						// 查询当前启用的向量模型配置。
 						ModelConfigDTO config = modelConfigDataService.getActiveConfigByType(ModelType.EMBEDDING);
 						if (config != null) {
+							// 根据配置创建 OpenAI 协议兼容的 EmbeddingModel。
 							currentEmbeddingModel = modelFactory.createEmbeddingModel(config);
 						}
 					}
 					catch (Exception e) {
+						// Embedding 初始化失败允许系统继续启动，因此这里只记录错误。
 						log.error("Failed to initialize EmbeddingModel: {}", e.getMessage());
 					}
 
+					// 没有可用模型时放入占位实现，避免依赖方在 Bean 初始化阶段空指针。
 					if (currentEmbeddingModel == null) {
 						log.warn("Using DummyEmbeddingModel for fallback.");
 						currentEmbeddingModel = new DummyEmbeddingModel();
@@ -127,6 +144,7 @@ public class AiModelRegistry {
 				}
 			}
 		}
+		// 无论真实模型还是 Dummy，都保证调用方得到非 null 的接口实现。
 		return currentEmbeddingModel;
 	}
 
@@ -136,16 +154,16 @@ public class AiModelRegistry {
 	 * 这不会立即创建新模型，只是让下一次访问时按最新配置重新初始化。
 	 */
 	public void refreshChat() {
+		// volatile 写入会立即对其他线程可见；下一次 getChatClient 会触发懒加载。
 		this.currentChatClient = null;
 		log.info("Chat cache cleared.");
 	}
 
 	/**
- * `refreshEmbedding`：初始化、装配或刷新当前能力所需的运行时状态。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+	 * 清空 Embedding 缓存；下一次访问时按数据库中的最新配置重新创建。
+	 */
 	public void refreshEmbedding() {
+		// 这里只失效缓存，不在配置保存线程中同步创建耗时的模型客户端。
 		this.currentEmbeddingModel = null;
 		log.info("Embedding cache cleared.");
 	}
@@ -160,12 +178,11 @@ public class AiModelRegistry {
 	private static class DummyEmbeddingModel implements EmbeddingModel {
 
 		/**
- * `call`：触发一次真正的执行动作，并把结果返回给上游。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+		 * 拒绝真正的批量 Embedding 请求，明确提示用户先配置模型。
+		 */
 		@Override
 		public EmbeddingResponse call(EmbeddingRequest request) {
+			// Dummy 只能解决启动期装配问题，不能伪造可用于检索的向量。
 			throw new RuntimeException("No active EMBEDDING model. Please configure it first!");
 		}
 
@@ -176,36 +193,34 @@ public class AiModelRegistry {
 		 */
 		@Override
 		public float[] embed(Document document) {
+			// 接口默认方法可能在启动探测中调用，这里返回长度为 0 的占位向量。
 			return new float[0];
 		}
 
 		/**
- * `embed`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+		 * 对字符串输入返回空占位向量，不代表真实语义结果。
+		 */
 		@Override
 		public float[] embed(String text) {
+			// 不根据文本生成伪数据，避免误导向量检索结果。
 			return new float[0];
 		}
 
 		/**
- * `embed`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+		 * 对批量字符串输入返回空列表，不生成任何假向量。
+		 */
 		@Override
 		public List<float[]> embed(List<String> texts) {
+			// List.of 返回不可变空列表，清楚表达“没有 Embedding 结果”。
 			return List.of();
 		}
 
 		/**
- * `embedForResponse`：执行当前类对外暴露的一步核心操作。
- *
- * 它定义的是服务契约，真正的落地逻辑通常在对应的实现类中完成。
- */
+		 * Dummy 无法构造包含 token 元数据的 EmbeddingResponse。
+		 */
 		@Override
 		public EmbeddingResponse embedForResponse(List<String> texts) {
+			// 保持占位实现的既有契约；真实业务请求应通过 call 方法得到明确异常。
 			return null;
 		}
 
@@ -217,6 +232,7 @@ public class AiModelRegistry {
 		 */
 		@Override
 		public int dimensions() {
+			// VectorStore 初始化时主要依赖这个值创建或校验向量列。
 			return 1536;
 		}
 

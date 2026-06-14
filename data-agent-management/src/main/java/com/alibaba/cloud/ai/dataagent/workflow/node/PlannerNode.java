@@ -76,18 +76,23 @@ public class PlannerNode implements NodeAction {
 	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
+		// 精简模式使用内置单步计划，完整模式调用模型规划。
 		Boolean onlyNl2sql = state.value(IS_ONLY_NL2SQL, false);
 
+		// 根据模式选择计划内容来源。
 		Flux<ChatResponse> flux = onlyNl2sql ? handleNl2SqlOnly() : handlePlanGenerate(state);
 
+		// 给计划正文添加 JSON 类型边界，供 GraphService 和前端识别。
 		Flux<ChatResponse> chatResponseFlux = Flux.concat(
 				Flux.just(ChatResponseUtil.createPureResponse(TextType.JSON.getStartSign())), flux,
 				Flux.just(ChatResponseUtil.createPureResponse(TextType.JSON.getEndSign())));
+		// 流结束时去掉边界标记，仅把纯 JSON 写入 PLANNER_NODE_OUTPUT。
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, v -> Map.of(PLANNER_NODE_OUTPUT, v.substring(TextType.JSON.getStartSign().length(),
 						v.length() - TextType.JSON.getEndSign().length())),
 				chatResponseFlux);
 
+		// 返回节点流，Graph 框架消费完成后再合并最终计划状态。
 		return Map.of(PLANNER_NODE_OUTPUT, generator);
 	}
 
@@ -98,9 +103,11 @@ public class PlannerNode implements NodeAction {
 	 * 规划质量直接决定后续节点是否会走错分支，因此是整条主链路中非常关键的一步。
 	 */
 	private Flux<ChatResponse> handlePlanGenerate(OverAllState state) {
+		// 使用 QueryEnhanceNode 产出的标准问题，避免多轮指代影响计划。
 		String canonicalQuery = StateUtil.getCanonicalQuery(state);
 		log.info("Using processed query for planning: {}", canonicalQuery);
 
+		// 非空表示上一版计划未通过校验或被用户拒绝，本轮属于修复规划。
 		String validationError = StateUtil.getStringValue(state, PLAN_VALIDATION_ERROR, null);
 		if (validationError != null) {
 			log.info("Regenerating plan with user feedback: {}", validationError);
@@ -109,11 +116,17 @@ public class PlannerNode implements NodeAction {
 			log.info("Generating initial plan");
 		}
 
+		// 读取表相关语义模型和结构化 Schema。
 		String semanticModel = (String) state.value(GENEGRATED_SEMANTIC_MODEL_PROMPT).orElse("");
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+
+		// 将 SchemaDTO 渲染成适合模型阅读的数据库说明。
 		String schemaStr = PromptHelper.buildMixMacSqlDbPrompt(schemaDTO, true);
 
+		// 修复场景会把旧计划和错误一起加入用户问题。
 		String userPrompt = buildUserPrompt(canonicalQuery, validationError, state);
+
+		// 业务证据帮助 Planner 理解指标和领域约束。
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
 
 		// `BeanOutputConverter` 会生成类似 JSON Schema 的格式说明，提示模型按 Plan 结构输出。
@@ -121,9 +134,11 @@ public class PlannerNode implements NodeAction {
 		Map<String, Object> params = Map.of("user_question", userPrompt, "schema", schemaStr, "evidence", evidence,
 				"semantic_model", semanticModel, "plan_validation_error", formatValidationError(validationError),
 				"format", beanOutputConverter.getFormat());
+		// 将所有参数渲染进 Planner 模板。
 		String plannerPrompt = PromptConstant.getPlannerPromptTemplate().render(params);
 		log.debug("Planner prompt: as follows \n{}\n", plannerPrompt);
 
+		// 返回模型 token 流，apply 负责添加类型标记和状态回写。
 		return llmService.callUser(plannerPrompt);
 	}
 
@@ -143,10 +158,12 @@ public class PlannerNode implements NodeAction {
 	 * 因此这里会把上一版计划和用户反馈一起拼进 prompt。
 	 */
 	private String buildUserPrompt(String input, String validationError, OverAllState state) {
+		// 初次规划不需要携带旧计划。
 		if (validationError == null) {
 			return input;
 		}
 
+		// 修复规划时保留上一版计划，帮助模型针对错误做局部调整。
 		String previousPlan = StateUtil.getStringValue(state, PLANNER_NODE_OUTPUT, "");
 		return String.format(
 				"IMPORTANT: User rejected previous plan with feedback: \"%s\"\n\n" + "Original question: %s\n\n"
@@ -156,11 +173,10 @@ public class PlannerNode implements NodeAction {
 	}
 
 	/**
- * `formatValidationError`：执行当前类对外暴露的一步核心操作。
- *
- * 阅读这个方法时，建议同时关注它依赖了什么输入，以及结果最后会被哪一层继续消费。
- */
+	 * 将可选校验错误格式化为 Planner prompt 中的高优先级说明。
+	 */
 	private String formatValidationError(String validationError) {
+		// 没有错误时返回空字符串，保持模板参数完整。
 		return validationError != null ? String
 			.format("**USER FEEDBACK (CRITICAL)**: %s\n\n**Must incorporate this feedback.**", validationError) : "";
 	}
