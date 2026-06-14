@@ -37,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @Component
 public class LangfuseService {
-
+	//链路追踪
 	private final Tracer tracer;
 
 	private final boolean enabled;
@@ -86,6 +86,9 @@ public class LangfuseService {
 		}
 
 		try {
+			// 在当前调用链下创建一个名为 spanName 的追踪节点，并从 startSpan() 开始计时。
+			// CLIENT 表示本服务正在调用外部服务；setParent(Context.current()) 会把当前 Span
+			// 设为父节点，使这次 LLM 调用能够和上游 HTTP 请求、Graph 执行串成完整链路。
 			Span span = tracer.spanBuilder(spanName)
 				.setSpanKind(SpanKind.CLIENT)
 				.setParent(Context.current())
