@@ -36,88 +36,87 @@ public class CodeExecutorProperties {
 	public static final String CONFIG_PREFIX = PROJECT_PROPERTIES_PREFIX + ".code-executor";
 
 	/**
-	 * Specify implementation class of code container pool runtime service
+	 * 指定代码容器池运行时服务的实现类型
 	 */
 	CodePoolExecutorEnum codePoolExecutor = CodePoolExecutorEnum.DOCKER;
 
 	/**
-	 * Service host, use default address if null
+	 * 服务主机地址，如果为 null 则使用默认地址
 	 */
 	String host = null;
 
 	/**
-	 * Image name, can customize image with common third-party dependencies to replace
-	 * this configuration
+	 * 镜像名称，可以自定义一个包含常用第三方依赖的镜像来替代这个配置
 	 */
 	String imageName = "continuumio/anaconda3:latest";
 
 	/**
-	 * Container name prefix
+	 * 容器名称前缀
 	 */
 	String containerNamePrefix = "nl2sql-python-exec-";
 
 	/**
-	 * Task blocking queue size
+	 * 任务阻塞队列大小
 	 */
 	Integer taskQueueSize = 5;
 
 	/**
-	 * Maximum number of core containers
+	 * 核心容器最大数量
 	 */
 	Integer coreContainerNum = 2;
 
 	/**
-	 * Maximum number of temporary containers
+	 * 临时容器最大数量
 	 */
 	Integer tempContainerNum = 2;
 
 	/**
-	 * Core thread count of thread pool
+	 * 线程池核心线程数
 	 */
 	Integer coreThreadSize = 5;
 
 	/**
-	 * Maximum thread count of thread pool
+	 * 线程池最大线程数
 	 */
 	Integer maxThreadSize = 5;
 
 	/**
-	 * Survival time of temporary containers, in minutes
+	 * 临时容器存活时间，单位分钟
 	 */
 	Integer tempContainerAliveTime = 5;
 
 	/**
-	 * Task survival time of thread pool, in seconds
+	 * 线程池任务存活时间，单位秒
 	 */
 	Long keepThreadAliveTime = 60L;
 
 	/**
-	 * Task blocking queue size of thread pool
+	 * 线程池任务阻塞队列大小
 	 */
 	Integer threadQueueSize = 10;
 
 	/**
-	 * Maximum container memory, in MB
+	 * 容器最大内存，单位 MB
 	 */
 	Long limitMemory = 500L;
 
 	/**
-	 * Number of container CPU cores
+	 * 容器 CPU 核数
 	 */
 	Long cpuCore = 1L;
 
 	/**
-	 * Python code execution time limit
+	 * Python 代码执行时间限制
 	 */
 	String codeTimeout = "60s";
 
 	/**
-	 * Maximum container runtime
+	 * 容器最大运行时长
 	 */
 	Long containerTimeout = 3000L;
 
 	/**
-	 * Container network mode
+	 * 容器网络模式
 	 */
 	String networkMode = "none";
 

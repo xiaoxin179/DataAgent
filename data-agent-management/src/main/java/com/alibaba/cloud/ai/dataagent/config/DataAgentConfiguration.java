@@ -127,63 +127,81 @@ public class DataAgentConfiguration implements DisposableBean {
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			// key 是状态名，value 是对应的合并策略。
 			HashMap<String, KeyStrategy> keyStrategyHashMap = new HashMap<>();
-			// User input
+			// 以最新用户输入为准，旧输入没有保留价值。
 			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
-			// Agent ID
+			// Agent 标识只需要当前会话的值，避免沿用旧会话。
 			keyStrategyHashMap.put(AGENT_ID, KeyStrategy.REPLACE);
-			// Multi-turn context
+			// 上下文会被新一轮重新组装，直接覆盖即可。
 			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
-			// Intent recognition
+			// 意图识别结果以本轮最新结论为准。
 			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// QUERY_ENHANCE_NODE节点输出
+			// 查询改写结果只保留最新版本，旧版本会误导后续节点。
 			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Semantic model
+			// 语义建模提示词按最新推导结果覆盖。
 			keyStrategyHashMap.put(GENEGRATED_SEMANTIC_MODEL_PROMPT, KeyStrategy.REPLACE);
-			// EVIDENCE节点输出
+			// 证据集合每轮重新检索，直接替换旧结果。
 			keyStrategyHashMap.put(EVIDENCE, KeyStrategy.REPLACE);
-			// schema recall节点输出
+			// schema 检索结果以最新召回为准。
 			keyStrategyHashMap.put(TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
+			// 列检索结果同样只保留最新召回内容。
 			keyStrategyHashMap.put(COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
-			// table relation节点输出
+			// 表关系分析结果每次重算，旧值不应叠加。
 			keyStrategyHashMap.put(TABLE_RELATION_OUTPUT, KeyStrategy.REPLACE);
+			// 关系分析异常以最新错误为准，便于重试决策。
 			keyStrategyHashMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, KeyStrategy.REPLACE);
+			// 重试次数是当前状态计数，必须覆盖更新。
 			keyStrategyHashMap.put(TABLE_RELATION_RETRY_COUNT, KeyStrategy.REPLACE);
+			// 方言类型由最新识别结果决定，旧值可能失效。
 			keyStrategyHashMap.put(DB_DIALECT_TYPE, KeyStrategy.REPLACE);
-			// Feasibility Assessment 节点输出
+			// 可行性结论以本轮评估结果为准。
 			keyStrategyHashMap.put(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// sql generate节点输出
+			// SQL 生成相关输出每轮重写，直接覆盖更安全。
 			keyStrategyHashMap.put(SQL_GENERATE_SCHEMA_MISSING_ADVICE, KeyStrategy.REPLACE);
+			// 生成的 SQL 只保留最新版本。
 			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
+			// 生成次数是最新统计值，不能累积保留旧值。
 			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
+			// 重写原因只记录当前一次生成的依据。
 			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
-			// Semantic consistence节点输出
+			// 语义一致性判断只看本轮校验结果。
 			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Planner 节点输出
+			// 计划器输出是当前计划草案，旧草案不应保留。
 			keyStrategyHashMap.put(PLANNER_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// PlanExecutorNode
+			// 执行计划当前步骤只维护一个最新值。
 			keyStrategyHashMap.put(PLAN_CURRENT_STEP, KeyStrategy.REPLACE);
+			// 下一个节点由最新调度结果决定。
 			keyStrategyHashMap.put(PLAN_NEXT_NODE, KeyStrategy.REPLACE);
+			// 校验状态每轮都会更新，直接覆盖。
 			keyStrategyHashMap.put(PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
+			// 校验错误只保留最新一次的报错信息。
 			keyStrategyHashMap.put(PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
+			// 计划修复次数需要反映当前重试过程。
 			keyStrategyHashMap.put(PLAN_REPAIR_COUNT, KeyStrategy.REPLACE);
-			// SQL Execute 节点输出
+			// SQL 执行结果每次查询都可能不同，保留最新返回值。
 			keyStrategyHashMap.put(SQL_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Python代码运行相关
+			// 内存中的查询结果以最新执行结果覆盖。
 			keyStrategyHashMap.put(SQL_RESULT_LIST_MEMORY, KeyStrategy.REPLACE);
+			// Python 是否成功是当前执行结论，不做历史累积。
 			keyStrategyHashMap.put(PYTHON_IS_SUCCESS, KeyStrategy.REPLACE);
+			// Python 尝试次数是实时计数，必须更新当前值。
 			keyStrategyHashMap.put(PYTHON_TRIES_COUNT, KeyStrategy.REPLACE);
+			// Python 回退模式按最新判断结果覆盖。
 			keyStrategyHashMap.put(PYTHON_FALLBACK_MODE, KeyStrategy.REPLACE);
+			// Python 执行输出只保留本次结果。
 			keyStrategyHashMap.put(PYTHON_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Python 生成代码结果按最新版本替换。
 			keyStrategyHashMap.put(PYTHON_GENERATE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Python 分析结果以最新分析为准。
 			keyStrategyHashMap.put(PYTHON_ANALYSIS_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// NL2SQL相关
+			// 是否仅走 NL2SQL 属于当前路由判断，旧值无意义。
 			keyStrategyHashMap.put(IS_ONLY_NL2SQL, KeyStrategy.REPLACE);
-			// Human Review keys
+			// 人工介入开关按当前流程状态覆盖。
 			keyStrategyHashMap.put(HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
+			// 人工反馈内容只保留最新一次填写的内容。
 			keyStrategyHashMap.put(HUMAN_FEEDBACK_DATA, KeyStrategy.REPLACE);
-			// Langfuse 追踪：threadId 透传
+			// 追踪 threadId 以当前请求为准，不能串线程。
 			keyStrategyHashMap.put(TRACE_THREAD_ID, KeyStrategy.REPLACE);
-			// Final result
+			// 最终结果只需要最后一次产出的完整答案。
 			keyStrategyHashMap.put(RESULT, KeyStrategy.REPLACE);
 			// 返回完整策略表，StateGraph 后续用它合并每个节点返回的 Map。
 			return keyStrategyHashMap;
@@ -191,21 +209,37 @@ public class DataAgentConfiguration implements DisposableBean {
 
 		// 创建图并注册全部业务节点；NodeBeanUtil 从 Spring 容器取得节点 Bean 并适配为异步动作。
 		StateGraph stateGraph = new StateGraph(NL2SQL_GRAPH_NAME, keyStrategyFactory)
+			// 先判断用户输入是不是有效分析请求。
 			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class))
+			// 先补充业务语义证据，再往下做检索。
 			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class))
+			// 把原始问题改写成更适合后续处理的版本。
 			.addNode(QUERY_ENHANCE_NODE, nodeBeanUtil.getNodeBeanAsync(QueryEnhanceNode.class))
+			// 召回相关表和列的 Schema 信息。
 			.addNode(SCHEMA_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(SchemaRecallNode.class))
+			// 整理表关系、外键和方言信息。
 			.addNode(TABLE_RELATION_NODE, nodeBeanUtil.getNodeBeanAsync(TableRelationNode.class))
+			// 判断当前信息是否足以继续分析。
 			.addNode(FEASIBILITY_ASSESSMENT_NODE, nodeBeanUtil.getNodeBeanAsync(FeasibilityAssessmentNode.class))
+			// 生成或修复 SQL。
 			.addNode(SQL_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlGenerateNode.class))
+			// 先拆出整体执行计划。
 			.addNode(PLANNER_NODE, nodeBeanUtil.getNodeBeanAsync(PlannerNode.class))
+			// 按计划推进到下一步。
 			.addNode(PLAN_EXECUTOR_NODE, nodeBeanUtil.getNodeBeanAsync(PlanExecutorNode.class))
+			// 真正执行 SQL 并拿结果。
 			.addNode(SQL_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlExecuteNode.class))
+			// 生成 Python 处理代码。
 			.addNode(PYTHON_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonGenerateNode.class))
+			// 执行 Python 代码。
 			.addNode(PYTHON_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonExecuteNode.class))
+			// 解析 Python 执行后的输出。
 			.addNode(PYTHON_ANALYZE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonAnalyzeNode.class))
+			// 把分析结果整理成最终报告。
 			.addNode(REPORT_GENERATOR_NODE, nodeBeanUtil.getNodeBeanAsync(ReportGeneratorNode.class))
+			// 校验 SQL 和业务语义是否一致。
 			.addNode(SEMANTIC_CONSISTENCY_NODE, nodeBeanUtil.getNodeBeanAsync(SemanticConsistencyNode.class))
+			// 需要时停下来等人工确认。
 			.addNode(HUMAN_FEEDBACK_NODE, nodeBeanUtil.getNodeBeanAsync(HumanFeedbackNode.class));
 
 		// 从 START 进入意图识别；后续固定边直接跳转，条件边通过 Dispatcher 读取 state 决策。
