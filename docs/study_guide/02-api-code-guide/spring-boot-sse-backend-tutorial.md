@@ -1411,34 +1411,6 @@ return sink.asFlux()
 
 ## 21. `GraphController` 里用到的 `Flux` API 在干什么
 
-### 21.1 `filter(...)`
-
-过滤掉不该发给前端的消息。
-
-DataAgent 的逻辑是：
-
-- `complete` 和 `error` 事件必须放行
-- 普通空文本消息不要发给前端
-
-### 21.2 `doOnSubscribe(...)`
-
-记录订阅建立。
-
-### 21.3 `doOnCancel(...)`
-
-浏览器断开时，停止后台任务。
-
-这一步非常关键。  
-如果没有它，前端虽然断开了，但 Graph 可能还在后台继续跑。
-
-### 21.4 `doOnError(...)`
-
-流异常时做兜底清理。
-
-### 21.5 `doOnComplete(...)`
-
-流结束时打完成日志。
-
 ## 22. 服务层是怎么把 Graph 输出变成 SSE 的
 
 关键代码在：
