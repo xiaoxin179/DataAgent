@@ -6,6 +6,11 @@
       "zip_url": "https://lightmake.site/api/v1/download?slug=skill-creator",
       "source": "skillhub",
       "version": "0.1.0"
+    },
+    "idea-backend-runner": {
+      "name": "IDEA 后端启动技能",
+      "source": "local-project",
+      "version": "0.1.0"
     }
   }
 }
