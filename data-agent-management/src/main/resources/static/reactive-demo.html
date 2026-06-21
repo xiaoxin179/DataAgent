@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>WebFlux 响应式与非阻塞 IO 演示</title>
+  <style>
+    body {
+      max-width: 900px;
+      margin: 40px auto;
+      font-family: "Microsoft YaHei", sans-serif;
+      line-height: 1.7;
+      color: #222;
+    }
+
+    button {
+      margin-right: 12px;
+      margin-bottom: 12px;
+      padding: 10px 16px;
+      cursor: pointer;
+    }
+
+    pre {
+      min-height: 260px;
+      padding: 16px;
+      background: #111827;
+      color: #d1fae5;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>WebFlux 测试页面</h1>
+
+  <p>
+    <strong>阻塞接口</strong> 使用 <code>Thread.sleep(10秒)</code>，
+    <strong>非阻塞接口</strong> 使用 <code>Mono.delay(10秒)</code>。
+    你可以先点慢接口，再马上点 ping，看服务是否还能立即响应。
+  </p>
+
+  <button onclick="callApi('/api/reactive-demo/blocking', '阻塞接口 Thread.sleep')">
+    调用阻塞接口，等待 10 秒
+  </button>
+
+  <button onclick="callApi('/api/reactive-demo/non-blocking', '非阻塞接口 Mono.delay')">
+    调用非阻塞接口，等待 10 秒
+  </button>
+
+  <button onclick="callApi('/api/reactive-demo/ping', '立刻返回 ping')">
+    调用 ping，立刻返回
+  </button>
+
+  <button onclick="startIntervalStream()">
+    开始接收 Flux.interval 定时流
+  </button>
+
+  <button onclick="stopIntervalStream()">
+    停止定时流
+  </button>
+
+  <button onclick="receiveSseMessage()">
+    接收一个 ServerSentEvent
+  </button>
+
+  <button onclick="startSlowConsumerDemo('/api/reactive-demo/slow-consumer/no-buffer', '无缓存慢消费者')">
+    无缓存：快生产 + 慢消费
+  </button>
+
+  <button onclick="startSlowConsumerDemo('/api/reactive-demo/slow-consumer/buffer', '有缓存慢消费者')">
+    有缓存：快生产 + 慢消费
+  </button>
+
+  <button onclick="clearLog()">清空日志</button>
+
+  <pre id="log"></pre>
+
+  <script>
+    const logElement = document.getElementById('log');
+    let intervalEventSource = null;
+
+    function appendLog(message) {
+      logElement.textContent += message + '\n\n';
+    }
+
+    function clearLog() {
+      logElement.textContent = '';
+    }
+
+    async function callApi(url, name) {
+      const start = new Date();
+      appendLog(`[${start.toLocaleTimeString()}] 开始请求：${name}`);
+
+      try {
+        const response = await fetch(url);
+        const text = await response.text();
+        const end = new Date();
+        const costSeconds = ((end - start) / 1000).toFixed(2);
+
+        appendLog(
+          `[${end.toLocaleTimeString()}] 完成请求：${name}\n` +
+          `耗时：${costSeconds} 秒\n` +
+          `返回内容：\n${text}`
+        );
+      }
+      catch (error) {
+        appendLog(`请求失败：${name}\n${error}`);
+      }
+    }
+
+    function startIntervalStream() {
+      if (intervalEventSource) {
+        appendLog('定时流已经在接收中，不需要重复打开。');
+        return;
+      }
+
+      appendLog(`[${new Date().toLocaleTimeString()}] 打开 SSE 连接：/api/reactive-demo/interval`);
+      intervalEventSource = new EventSource('/api/reactive-demo/interval');
+
+      intervalEventSource.onmessage = (event) => {
+        appendLog(`[${new Date().toLocaleTimeString()}] 收到定时流数字：${event.data}`);
+      };
+
+      intervalEventSource.onerror = () => {
+        appendLog(`[${new Date().toLocaleTimeString()}] 定时流发生错误或连接被关闭。`);
+        stopIntervalStream();
+      };
+    }
+
+    function stopIntervalStream() {
+      if (!intervalEventSource) {
+        appendLog('当前没有正在接收的定时流。');
+        return;
+      }
+
+      intervalEventSource.close();
+      intervalEventSource = null;
+      appendLog(`[${new Date().toLocaleTimeString()}] 已停止接收定时流。`);
+    }
+
+    function receiveSseMessage() {
+      appendLog(`[${new Date().toLocaleTimeString()}] 打开 SSE 连接：/api/reactive-demo/sse-message`);
+
+      const eventSource = new EventSource('/api/reactive-demo/sse-message');
+
+      eventSource.addEventListener('message', (event) => {
+        appendLog(
+          `[${new Date().toLocaleTimeString()}] 收到 ServerSentEvent\n` +
+          `event: message\n` +
+          `id: ${event.lastEventId}\n` +
+          `data: ${event.data}`
+        );
+        eventSource.close();
+      });
+
+      eventSource.onerror = () => {
+        appendLog(`[${new Date().toLocaleTimeString()}] ServerSentEvent 连接关闭或发生错误。`);
+        eventSource.close();
+      };
+    }
+
+    function startSlowConsumerDemo(url, name) {
+      appendLog(`[${new Date().toLocaleTimeString()}] 开始演示：${name}`);
+      appendLog('说明：后端生产者会瞬间发送 30 条，后端慢消费者每 500ms 才处理 1 条。');
+
+      const eventSource = new EventSource(url);
+
+      eventSource.addEventListener('data', (event) => {
+        appendLog(`[${new Date().toLocaleTimeString()}] ${name} 收到数据：${event.data}`);
+      });
+
+      eventSource.addEventListener('overflow', (event) => {
+        appendLog(`[${new Date().toLocaleTimeString()}] ${name} 出现溢出/丢失风险：${event.data}`);
+        eventSource.close();
+      });
+
+      eventSource.addEventListener('summary', (event) => {
+        appendLog(`[${new Date().toLocaleTimeString()}] ${name} 总结：${event.data}`);
+        eventSource.close();
+      });
+
+      eventSource.onerror = () => {
+        appendLog(`[${new Date().toLocaleTimeString()}] ${name} 连接关闭或发生错误。`);
+        eventSource.close();
+      };
+    }
+  </script>
+</body>
+</html>
